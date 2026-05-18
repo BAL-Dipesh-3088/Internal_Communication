@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Eye, EyeOff, Loader2, ArrowRight,
   Shield, Zap, Users, Lock,
@@ -9,6 +9,7 @@ import { useWindowSize, BREAKPOINTS } from '@/hooks/useWindowSize';
 
 export default function LoginPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { login, isLoading, error, clearError } = useAuthStore();
   const [username, setUsername]         = useState('');
   const [password, setPassword]         = useState('');
@@ -20,9 +21,15 @@ export default function LoginPage() {
   const isTablet          = width >= BREAKPOINTS.mobile && width < BREAKPOINTS.tablet;
   const showBrandingPanel = width >= BREAKPOINTS.tablet;
 
+  // If we were redirected here from a protected route (e.g. someone shared a
+  // /meeting/:callId link with a not-yet-logged-in user), bounce back there
+  // after successful login. ProtectedRoute writes the original path into
+  // location.state.from. Falls back to home if no return URL.
+  const returnTo: string = (location.state as any)?.from || '/';
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    try { await login(username, password); navigate('/'); }
+    try { await login(username, password); navigate(returnTo, { replace: true }); }
     catch { /* error set in store */ }
   };
 
@@ -331,25 +338,9 @@ export default function LoginPage() {
               </button>
             </form>
 
-            {/* Divider */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 14, width: '100%', marginBottom: 16 }}>
-              <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.15)' }} />
-              <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.38)', fontWeight: 600, letterSpacing: '0.5px' }}>OR</span>
-              <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.15)' }} />
-            </div>
-
-            {/* Register link */}
-            <div style={{ textAlign: 'center' }}>
-              <span style={{ fontSize: 13, color: 'rgba(255,255,255,0.42)' }}>Don't have an account? </span>
-              <Link
-                to="/register"
-                style={{ fontSize: 13, fontWeight: 600, color: '#A5A7F0', textDecoration: 'none' }}
-                onMouseEnter={(e) => { e.currentTarget.style.color = '#fff'; }}
-                onMouseLeave={(e) => { e.currentTarget.style.color = '#A5A7F0'; }}
-              >
-                Create account
-              </Link>
-            </div>
+            {/* Self-service registration is disabled — accounts are provisioned by IT/admin only.
+                If management approves public sign-up later, restore the "OR" divider + Register link
+                block here. The /register route + RegisterPage component still exist for that day. */}
           </div>
 
         </div>

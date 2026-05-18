@@ -1,15 +1,17 @@
 import { useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
 import LoginPage from '@/components/auth/LoginPage';
 import RegisterPage from '@/components/auth/RegisterPage';
 import AppLayout from '@/components/layout/AppLayout';
 import ChatWindow from '@/components/chat/ChatWindow';
 import AdminDashboard from '@/components/admin/AdminDashboard';
+import MeetingJoinPage from '@/components/calls/MeetingJoinPage';
 import { Loader2 } from 'lucide-react';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuthStore();
+  const location = useLocation();
 
   if (isLoading) {
     return (
@@ -20,7 +22,9 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   }
 
   if (!isAuthenticated) {
-    return <Navigate to="/login" replace />;
+    // Preserve the intended destination so LoginPage can return the user
+    // there after authenticating. Used by the /meeting/:callId flow.
+    return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
   }
 
   return <>{children}</>;
@@ -84,6 +88,8 @@ export default function App() {
           <Route index element={<ChatWindow />} />
           <Route path="chat/:conversationId" element={<ChatWindow />} />
           <Route path="admin" element={<AdminDashboard />} />
+          {/* Shareable meeting link — anyone in the org with the URL can preview + join */}
+          <Route path="meeting/:callId" element={<MeetingJoinPage />} />
         </Route>
 
         {/* Catch all */}

@@ -36,11 +36,16 @@ keys:
 
 # Room defaults — these apply when our backend creates a room without specifying
 room:
+  # Enabled codecs (priority order).
+  # H.264 first because every modern CPU has HARDWARE decode for it — major
+  # CPU savings on the subscriber side compared to software-decoded VP9.
+  # VP8 kept as fallback for any browser that fails H.264 negotiation.
+  # VP9 deliberately removed: software-only decode on most consumer
+  # machines and CPU spikes in 5+ person calls were a known pain point.
   enabled_codecs:
     - mime: audio/opus
-    - mime: video/VP8
     - mime: video/H264
-    - mime: video/VP9
+    - mime: video/VP8
   max_participants: 30
   empty_timeout: 300       # auto-close empty rooms after 5 min
   departure_timeout: 20    # remove participant after 20s of disconnection

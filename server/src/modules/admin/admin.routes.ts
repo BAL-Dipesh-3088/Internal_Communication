@@ -81,7 +81,9 @@ router.get('/dashboard', async (_req: AuthRequest, res: Response) => {
 // GET /api/admin/users — List all users with details
 router.get('/users', async (req: AuthRequest, res: Response) => {
   try {
-    const { search, department, limit = '50', offset = '0' } = req.query;
+    // Default limit raised to 1000 so admin views never silently truncate the user list.
+    // Pagination still works for callers that explicitly pass ?limit= and ?offset=.
+    const { search, department, limit = '1000', offset = '0' } = req.query;
 
     let sql = `
       SELECT id, username, email, display_name, avatar_url, role, department, designation,
@@ -820,7 +822,9 @@ router.post('/users/:id/mail-account/test', async (req: AuthRequest, res: Respon
 // GET /api/admin/conversations — View all conversations
 router.get('/conversations', async (req: AuthRequest, res: Response) => {
   try {
-    const { search, type, limit = '50', offset = '0' } = req.query;
+    // Compliance view — default raised to 500 so auditors don't silently miss older
+    // conversations. Pagination via ?limit= / ?offset= still works for callers.
+    const { search, type, limit = '500', offset = '0' } = req.query;
 
     let sql = `
       SELECT c.id, c.type, c.name, c.created_at, c.last_message_at,

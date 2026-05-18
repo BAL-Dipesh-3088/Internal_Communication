@@ -351,7 +351,10 @@ router.get('/test', async (_req: AuthRequest, res: Response) => {
 
 router.get('/inbox', async (req: AuthRequest, res: Response) => {
   try {
-    const { folder = 'INBOX', limit = '30' } = req.query;
+    // Default raised so users see a meaningful history of their inbox even if the
+    // client forgets to pass ?limit=. Stalwart handles this efficiently (envelope
+    // fetch is fast). Callers can still override with ?limit= for pagination.
+    const { folder = 'INBOX', limit = '200' } = req.query;
     // Get the logged-in user's email + mail_password for per-user IMAP login
     const cred = await resolveUserMailCredential(req.user!.userId);
     const userEmail = cred.email;

@@ -8,7 +8,9 @@ const router = Router();
 // GET /api/users — List all users (with search)
 router.get('/', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
-    const { search, department, limit = '50', offset = '0' } = req.query;
+    // Default limit raised to 1000 so org-wide lists (contacts, mentions, group-add picker)
+    // don't silently truncate. Callers that want pagination pass their own ?limit=.
+    const { search, department, limit = '1000', offset = '0' } = req.query;
     let sql = `
       SELECT id, username, email, display_name, role, department, designation,
              avatar_url, status, status_message, sip_extension, last_seen

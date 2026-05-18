@@ -53,12 +53,18 @@ export function generateAccessToken(opts: MintTokenOptions): Promise<string> {
 
   // Permissions — every participant can publish + subscribe.
   // Host gets extra admin grant so they can kick/mute others via server API.
+  //
+  // `canUpdateOwnMetadata: true` is required for the participant to call
+  // `setAttributes` on themselves. We use that to store `handRaised` state
+  // for the Phase 4 raise-hand feature. Without this grant, LiveKit returns
+  // "does not have permission to update own metadata" and the call breaks.
   at.addGrant({
     room: opts.roomName,
     roomJoin: true,
     canPublish: true,
     canSubscribe: true,
     canPublishData: true,
+    canUpdateOwnMetadata: true,
     roomAdmin: !!opts.isHost,
     roomCreate: !!opts.isHost,
   });
@@ -94,9 +100,42 @@ export async function listParticipants(roomName: string): Promise<ParticipantInf
   return await roomService.listParticipants(roomName);
 }
 
+/**
+ * Host action: update a participant's attributes from the server side.
+ *
+ * Used by the "lower hand" flow — clients can only modify their OWN attributes
+ * via the client SDK, so to clear someone else's `handRaised` flag we go
+ * through the LiveKit server API (which is authenticated with API_SECRET).
+ *
+ * Passing an empty-string value for a key effectively unsets that attribute
+ * on the participant.
+ */
+export async function updateParticipantAttributes(
+  roomName: string,
+  identity: string,
+  attributes: Record<string, string>,
+): Promise<void> {
+  // livekit-server-sdk's updateParticipant has two overloads — we use the
+  // options-object form to pass attributes (the positional form only supports
+  // metadata/permission/name).
+  await roomService.updateParticipant(roomName, identity, { attributes });
+}
+
 /** Host action: force-end the room. All participants are kicked. */
 export async function endRoom(roomName: string): Promise<void> {
   await roomService.deleteRoom(roomName);
+}
+
+/**
+ * Update the room-level metadata. We use this to carry the meeting title
+ * (and potentially other future fields like agenda). The metadata is a
+ * single string — we JSON-stringify a small object server-side and the
+ * client parses it from useRoomInfo().metadata.
+ *
+ * Auto-synced to every participant in real-time by LiveKit (no extra socket plumbing).
+ */
+export async function updateRoomMetadata(roomName: string, metadata: string): Promise<void> {
+  await roomService.updateRoomMetadata(roomName, metadata);
 }
 
 /** Host action: remove a single participant. */
