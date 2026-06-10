@@ -49,6 +49,11 @@ async function bootstrap() {
   // 2c. Clear stale group calls — any call still marked 'ringing'/'answered' from
   // a previous run is a ghost (LiveKit rooms don't survive restarts, and no client
   // is connected to drive the lifecycle). Mark them all ended.
+  //
+  // We INTENTIONALLY exclude 'scheduled' calls (calendar-event-backed meetings
+  // that haven't started yet). Those have no live LiveKit room by design —
+  // the room is auto-created when the first participant joins. Marking them
+  // ended would silently delete future meetings.
   const ghostCleanup = await query(
     `UPDATE call_history
         SET status = 'ended',

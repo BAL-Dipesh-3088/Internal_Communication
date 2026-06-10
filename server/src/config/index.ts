@@ -50,4 +50,13 @@ export const config = {
   },
 
   clientUrl: process.env.CLIENT_URL || 'http://localhost:5173',
+
+  // Canonical, public-facing URL of the app (the address real users type in the
+  // browser, e.g. https://icp.balasorealloys.in). This is the SINGLE source of
+  // truth for every absolute link we put into outbound email — meeting invites,
+  // password resets, etc. It is intentionally SEPARATE from `clientUrl` (which
+  // is the CORS origin) because email recipients are on other machines and must
+  // never receive a dev/localhost link. Falls back to CLIENT_URL only when it is
+  // not a local address; otherwise emails would carry an unreachable link.
+  publicAppUrl: process.env.PUBLIC_APP_URL || '',
 };

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, MapPin, Clock, Users, FileText, Palette } from 'lucide-react';
+import { X, MapPin, Clock, Users, FileText, Palette, Video, Link2, Check } from 'lucide-react';
 import api from '@/services/api';
 
 /* ===================================================================
@@ -16,6 +16,9 @@ interface CalendarEvent {
   color: string;
   created_by: string;
   attendees: { user_id: string; display_name: string; status: string }[] | null;
+  // Phase A — online meeting fields
+  is_online_meeting?: boolean;
+  livekit_call_id?: string | null;
 }
 
 interface Contact {
@@ -70,6 +73,12 @@ export default function CreateEventModal({ editingEvent, prefillTime, onClose, o
   const [description, setDescription] = useState(editingEvent?.description || '');
   const [color, setColor] = useState(editingEvent?.color || '#5B5FC7');
   const [saving, setSaving] = useState(false);
+  // Phase A — online meeting state
+  // When editing an existing online meeting, pre-fill the toggle to ON
+  // and the link gets displayed below the toggle (read-only after creation —
+  // the meeting URL is the /meeting/<livekit_call_id> stable link).
+  const [isOnlineMeeting, setIsOnlineMeeting] = useState(!!editingEvent?.is_online_meeting);
+  const [linkCopied, setLinkCopied] = useState(false);
 
   // Attendees
   const [attendees, setAttendees] = useState<Contact[]>([]);
@@ -131,6 +140,7 @@ export default function CreateEventModal({ editingEvent, prefillTime, onClose, o
         location: location.trim() || null,
         color,
         attendee_ids: attendees.map(a => a.id),
+        is_online_meeting: isOnlineMeeting,
       };
 
       if (editingEvent) {
@@ -231,6 +241,88 @@ export default function CreateEventModal({ editingEvent, prefillTime, onClose, o
               }}
             />
           </div>
+
+          {/* Online meeting toggle — Teams-style.
+              When ON: an LiveKit meeting link is auto-generated on Save.
+              That link is emailed to every attendee in the .ics invite and
+              opens the meeting via /meeting/<callId>. */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+            <Video size={16} color="#8B8CA7" style={{ flexShrink: 0 }} />
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#242424' }}>Online meeting</div>
+                <div style={{ fontSize: 11, color: '#8B8CA7', marginTop: 2 }}>
+                  {isOnlineMeeting
+                    ? 'A meeting link will be created and emailed to attendees'
+                    : 'Generate a join link and email it to attendees'}
+                </div>
+              </div>
+              {/* iOS-style switch */}
+              <button
+                type="button"
+                role="switch"
+                aria-checked={isOnlineMeeting}
+                onClick={() => setIsOnlineMeeting(v => !v)}
+                style={{
+                  width: 42, height: 24, borderRadius: 999,
+                  background: isOnlineMeeting ? '#5B5FC7' : '#D0D0D0',
+                  border: 'none', cursor: 'pointer', position: 'relative',
+                  transition: 'background 0.15s', padding: 0, flexShrink: 0,
+                }}
+              >
+                <span style={{
+                  position: 'absolute', top: 2, left: isOnlineMeeting ? 20 : 2,
+                  width: 20, height: 20, borderRadius: '50%', background: '#fff',
+                  transition: 'left 0.15s', boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                }} />
+              </button>
+            </div>
+          </div>
+
+          {/* Meeting link display — shows AFTER an online event is saved.
+              The link is built from livekit_call_id which only exists after
+              POST returns. So during NEW event creation we just show a
+              promise ("A link will be created"); during EDIT we show the
+              actual link with a Copy button. */}
+          {isOnlineMeeting && editingEvent?.livekit_call_id && (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14,
+              padding: '10px 12px', background: '#F0F4FF', borderRadius: 6,
+              border: '1px solid #D6DDF7',
+            }}>
+              <Link2 size={14} color="#5B5FC7" style={{ flexShrink: 0 }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 11, color: '#5B5FC7', fontWeight: 600, marginBottom: 2 }}>Meeting link</div>
+                <div style={{
+                  fontSize: 12, color: '#242424',
+                  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                }}>
+                  {`${window.location.origin}/meeting/${editingEvent.livekit_call_id}`}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  const url = `${window.location.origin}/meeting/${editingEvent.livekit_call_id}`;
+                  try {
+                    await navigator.clipboard.writeText(url);
+                    setLinkCopied(true);
+                    setTimeout(() => setLinkCopied(false), 2000);
+                  } catch {
+                    window.prompt('Copy this meeting link:', url);
+                  }
+                }}
+                style={{
+                  padding: '6px 10px', fontSize: 11, fontWeight: 600,
+                  background: linkCopied ? '#107C10' : '#5B5FC7',
+                  color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0,
+                }}
+              >
+                {linkCopied ? <><Check size={11} /> Copied</> : <>Copy</>}
+              </button>
+            </div>
+          )}
 
           {/* Description */}
           <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>

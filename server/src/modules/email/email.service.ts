@@ -81,6 +81,24 @@ export interface SendEmailOptions {
   inReplyTo?: string;
   /** List of all ancestor Message-IDs in the thread (References header) */
   references?: string[];
+  /**
+   * iCalendar payload for meeting invites. When present, it's added as a
+   * multipart/alternative MIME part (NOT as a regular attachment) — this is
+   * what makes Outlook / Apple Mail / Gmail render the native
+   * "Accept / Decline / Tentative" inline buttons instead of showing a
+   * downloadable .ics file.
+   *
+   * It's ALSO attached as a regular .ics attachment so non-rich clients
+   * (some webmail viewers, mobile fallbacks) can still save and import it.
+   */
+  icalInvite?: {
+    /** Raw RFC 5545 .ics content */
+    content: string;
+    /** REQUEST = new/update invite, CANCEL = cancellation */
+    method: 'REQUEST' | 'CANCEL';
+    /** Filename for the attachment fallback (default 'invite.ics') */
+    filename?: string;
+  };
 }
 
 export async function sendEmail(options: SendEmailOptions): Promise<{ messageId: string; accepted: string[] }> {
@@ -103,6 +121,26 @@ export async function sendEmail(options: SendEmailOptions): Promise<{ messageId:
     ? options.references.join(' ')
     : undefined;
 
+  // ── iCalendar invitation handling ──
+  // For Outlook/Apple Mail/Gmail to show native Accept/Decline buttons, the
+  // .ics must be a multipart/alternative part (peer of text/html), NOT a
+  // regular attachment. Nodemailer exposes this via `alternatives`. We also
+  // duplicate as a regular .ics attachment so dumb clients still see a
+  // saveable file.
+  const alternatives: any[] = [];
+  const attachmentsList: any[] = options.attachments ? [...options.attachments] : [];
+  if (options.icalInvite) {
+    alternatives.push({
+      content: options.icalInvite.content,
+      contentType: `text/calendar; charset=UTF-8; method=${options.icalInvite.method}`,
+    });
+    attachmentsList.push({
+      filename: options.icalInvite.filename || 'invite.ics',
+      content: Buffer.from(options.icalInvite.content, 'utf-8'),
+      contentType: 'application/ics',
+    });
+  }
+
   // ── Build the raw MIME message ONCE — used for both SMTP send and IMAP APPEND ──
   // This is the same pattern Outlook/Thunderbird use: compile once, send via SMTP,
   // then append the same bytes to the user's Sent folder via IMAP.
@@ -117,7 +155,8 @@ export async function sendEmail(options: SendEmailOptions): Promise<{ messageId:
     replyTo: options.replyTo,
     inReplyTo: options.inReplyTo || undefined,
     references: referencesHeader,
-    attachments: options.attachments,
+    attachments: attachmentsList.length > 0 ? attachmentsList : undefined,
+    alternatives: alternatives.length > 0 ? alternatives : undefined,
   };
 
   console.log(`[SENDMAIL] options.inReplyTo=${options.inReplyTo || 'NONE'} options.references=${referencesHeader || 'NONE'}`);

@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   Calendar, ChevronLeft, ChevronRight, Plus, Clock, MapPin,
-  Check, X, HelpCircle, Trash2, Edit3, Loader2, Users,
+  Check, X, HelpCircle, Trash2, Edit3, Loader2, Users, Video,
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
 import api from '@/services/api';
 import { getSocket } from '@/services/socket';
@@ -30,6 +31,9 @@ interface CalendarEvent {
   creator_name: string;
   attendees: Attendee[] | null;
   created_at: string;
+  // Phase A — online meeting (Teams-style)
+  is_online_meeting?: boolean;
+  livekit_call_id?: string | null;
 }
 
 type ViewMode = 'week' | 'day';
@@ -492,8 +496,14 @@ export default function CalendarWindow() {
                         onMouseEnter={e => { e.currentTarget.style.opacity = '1'; }}
                         onMouseLeave={e => { e.currentTarget.style.opacity = '0.9'; }}
                       >
-                        <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600 }}>
-                          {ev.title}
+                        <div style={{
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600,
+                          display: 'flex', alignItems: 'center', gap: 3,
+                        }}>
+                          {ev.is_online_meeting && (
+                            <Video size={10} style={{ flexShrink: 0, opacity: 0.9 }} />
+                          )}
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{ev.title}</span>
                         </div>
                         {heightPx > 30 && (
                           <div style={{ fontSize: 10, opacity: 0.85, marginTop: 1 }}>
@@ -570,6 +580,7 @@ function EventDetailPopup({ event, position, userId, onClose, onRsvp, onEdit, on
   const isCreator = event.created_by === userId;
   const myAttendance = event.attendees?.find(a => a.user_id === userId);
   const popupRef = useRef<HTMLDivElement>(null);
+  const routerNavigate = useNavigate();
 
   // Close on click outside
   useEffect(() => {
@@ -594,8 +605,45 @@ function EventDetailPopup({ event, position, userId, onClose, onRsvp, onEdit, on
       <div style={{ height: 6, background: event.color || '#5B5FC7', borderRadius: '10px 10px 0 0' }} />
 
       <div style={{ padding: '14px 18px' }}>
-        {/* Title */}
-        <h3 style={{ fontSize: 16, fontWeight: 700, color: '#242424', margin: '0 0 8px' }}>{event.title}</h3>
+        {/* Title (with online-meeting badge) */}
+        <h3 style={{
+          fontSize: 16, fontWeight: 700, color: '#242424', margin: '0 0 8px',
+          display: 'flex', alignItems: 'center', gap: 6,
+        }}>
+          {event.is_online_meeting && (
+            <span title="Online meeting" style={{
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              width: 22, height: 22, borderRadius: 6, background: '#E8EBFA', color: '#5B5FC7',
+              flexShrink: 0,
+            }}>
+              <Video size={13} />
+            </span>
+          )}
+          <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {event.title}
+          </span>
+        </h3>
+
+        {/* Join meeting CTA — only when online meeting and the link exists */}
+        {event.is_online_meeting && event.livekit_call_id && (
+          <button
+            onClick={() => {
+              onClose();
+              routerNavigate(`/meeting/${event.livekit_call_id}`);
+            }}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              gap: 6, width: '100%', padding: '10px 12px', marginBottom: 12,
+              background: '#5B5FC7', color: '#fff', border: 'none', borderRadius: 6,
+              fontSize: 13, fontWeight: 600, cursor: 'pointer',
+              boxShadow: '0 2px 6px rgba(91,95,199,0.3)',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = '#4F52B2'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = '#5B5FC7'; }}
+          >
+            <Video size={15} /> Join meeting
+          </button>
+        )}
 
         {/* Time */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#616161', marginBottom: 6 }}>

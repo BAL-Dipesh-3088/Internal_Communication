@@ -112,6 +112,9 @@ services:
       UPLOAD_DIR: ../data/files
       # Client
       CLIENT_URL: http://192.168.10.15
+      # Public canonical URL used in ALL outbound emails (meeting invites etc.).
+      # Must be the HTTPS address real recipients reach — never an internal IP/localhost.
+      PUBLIC_APP_URL: https://icp.balasorealloys.in
       # Email from
       SMTP_FROM_NAME: BAL Connect
       # LiveKit (group calls SFU)

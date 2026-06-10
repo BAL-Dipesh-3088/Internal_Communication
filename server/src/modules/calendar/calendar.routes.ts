@@ -1,10 +1,88 @@
 import { Router, Response } from 'express';
+import { randomUUID } from 'crypto';
 import { authMiddleware, AuthRequest } from '../../middleware/auth';
 import { query, pool } from '../../database/connection';
 import { getIO } from '../../services/socket.service';
+import { config } from '../../config';
+import { sendInvite, sendUpdate, sendCancellation, type InviteRecipient } from './invite.email';
 
 const router = Router();
 router.use(authMiddleware);
+
+/**
+ * Is this URL/host a local-only / non-routable address that must NEVER appear
+ * in an email sent to other people? (localhost, loopback, link-local, etc.)
+ */
+function isLocalAddress(url: string): boolean {
+  const host = url
+    .replace(/^https?:\/\//i, '')   // strip scheme
+    .split('/')[0]                  // strip path
+    .split(':')[0]                  // strip port
+    .toLowerCase()
+    .trim();
+  return (
+    host === 'localhost' ||
+    host === '127.0.0.1' ||
+    host === '0.0.0.0' ||
+    host === '::1' ||
+    host.endsWith('.local')
+  );
+}
+
+/**
+ * Resolve the PUBLIC meeting URL for a given LiveKit call — the link that lands
+ * in invite emails opened on other people's machines. It MUST be an absolute,
+ * routable address; a localhost link is worthless to a recipient.
+ *
+ * Priority order (most-explicit / most-trustworthy first):
+ *   1. PUBLIC_APP_URL  — the canonical public address (e.g. https://icp.balasorealloys.in).
+ *                        This is the correct production answer and always wins.
+ *   2. CLIENT_URL      — only if it is NOT a local address (in prod it is the real
+ *                        host; in dev it is localhost and is deliberately skipped).
+ *   3. Origin header   — only if it is NOT a local address.
+ *   4. Relative path   — last resort. Works inside the app, useless in email,
+ *                        so we also warn loudly so it never silently ships.
+ *
+ * The localhost guard is the key fix: even if someone forgets to set
+ * PUBLIC_APP_URL, a dev/localhost value can never leak into an outbound invite.
+ */
+function buildMeetingUrl(callId: string, req?: AuthRequest): string {
+  const candidates: Array<string | undefined> = [
+    config.publicAppUrl,
+    process.env.CLIENT_URL,
+    req?.get?.('origin'),
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate && !isLocalAddress(candidate)) {
+      return `${candidate.replace(/\/$/, '')}/meeting/${callId}`;
+    }
+  }
+
+  console.warn(
+    '[calendar] No public base URL resolved for meeting link — set PUBLIC_APP_URL ' +
+      '(e.g. https://icp.balasorealloys.in). Falling back to a relative path that ' +
+      'will NOT work in email clients.'
+  );
+  return `/meeting/${callId}`;
+}
+
+/**
+ * Fetch the email address + display name for a list of user ids.
+ * Skips users with no email (which would just silently fail the invite anyway).
+ */
+async function resolveRecipients(userIds: string[]): Promise<InviteRecipient[]> {
+  if (userIds.length === 0) return [];
+  const r = await query(
+    `SELECT id, email, display_name, username
+       FROM users WHERE id = ANY($1) AND is_active = true AND email IS NOT NULL AND email <> ''`,
+    [userIds],
+  );
+  return r.rows.map((u: any) => ({
+    email: u.email,
+    displayName: u.display_name || u.username || u.email,
+  }));
+}
 
 // ─── GET EVENTS (date range) ─────────────────────────────
 
@@ -84,22 +162,55 @@ router.post('/events', async (req: AuthRequest, res: Response) => {
   const client = await pool.connect();
   try {
     const userId = req.user!.userId;
-    const { title, description, start_time, end_time, is_all_day, location, color, attendee_ids } = req.body;
+    const {
+      title, description, start_time, end_time, is_all_day, location, color, attendee_ids,
+      is_online_meeting, // NEW — Teams-style toggle
+    } = req.body;
 
     if (!title?.trim()) return res.status(400).json({ error: 'Title is required' });
     if (!start_time || !end_time) return res.status(400).json({ error: 'Start and end time required' });
 
+    const onlineMeeting = !!is_online_meeting;
+
     await client.query('BEGIN');
 
-    // Create event
+    // Create event (livekit_call_id is set later if online meeting)
     const eventResult = await client.query(
-      `INSERT INTO calendar_events (title, description, start_time, end_time, is_all_day, location, color, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO calendar_events (title, description, start_time, end_time, is_all_day, location, color, created_by, is_online_meeting)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
-      [title.trim(), description || null, start_time, end_time, is_all_day || false, location || null, color || '#5B5FC7', userId]
+      [title.trim(), description || null, start_time, end_time, is_all_day || false, location || null, color || '#5B5FC7', userId, onlineMeeting]
     );
 
     const event = eventResult.rows[0];
+
+    // ── Pre-provision a LiveKit call row for online meetings ──
+    // We create the call_history record NOW (with status='scheduled') so the
+    // /meeting/<callId> link is stable and works before the meeting starts.
+    // The LiveKit room itself is lazy-created when the first participant joins.
+    let livekitCallId: string | null = null;
+    if (onlineMeeting) {
+      livekitCallId = randomUUID();
+      const roomName = `cal-${event.id.replace(/-/g, '').slice(0, 12)}-${Date.now().toString(36)}`;
+      await client.query(
+        `INSERT INTO call_history (
+            id, caller_id, host_user_id, call_type, is_group_call, status,
+            participants, livekit_room_name, calendar_event_id, started_at
+          ) VALUES ($1, $2, $2, 'video', TRUE, 'scheduled', $3, $4, $5, $6)`,
+        [
+          livekitCallId,
+          userId,
+          JSON.stringify([]), // host added on first join via /join flow
+          roomName,
+          event.id,
+          start_time,
+        ],
+      );
+      await client.query(
+        `UPDATE calendar_events SET livekit_call_id = $1 WHERE id = $2`,
+        [livekitCallId, event.id],
+      );
+    }
 
     // Add creator as accepted attendee
     await client.query(
@@ -147,7 +258,7 @@ router.post('/events', async (req: AuthRequest, res: Response) => {
 
     const fullEvent = fullResult.rows[0];
 
-    // Notify attendees via socket
+    // Notify attendees via socket (real-time, in-app)
     const creatorName = fullEvent.creator_name || 'Someone';
     if (attendee_ids && Array.isArray(attendee_ids)) {
       const io = getIO();
@@ -157,6 +268,37 @@ router.post('/events', async (req: AuthRequest, res: Response) => {
           event: fullEvent,
           invitedBy: { id: userId, display_name: creatorName },
         });
+      }
+    }
+
+    // ── Send .ics email invites (out-of-band — failure here doesn't fail the API) ──
+    // Attendees who use Outlook/Apple Mail get a native invite with
+    // Accept/Decline/Tentative buttons in their inbox. Anyone can also use
+    // the "Join meeting" button to open the LiveKit room from email.
+    if (attendee_ids && Array.isArray(attendee_ids) && attendee_ids.length > 0) {
+      const recipientIds = attendee_ids.filter((id: string) => id !== userId);
+      if (recipientIds.length > 0) {
+        // Fire-and-forget so a slow SMTP doesn't block the API response
+        (async () => {
+          try {
+            const recipients = await resolveRecipients(recipientIds);
+            if (recipients.length === 0) return;
+            await sendInvite({
+              uid: event.id,
+              organiserUserId: userId,
+              recipients,
+              title: event.title,
+              description: event.description || undefined,
+              location: event.location || undefined,
+              meetingUrl: livekitCallId ? buildMeetingUrl(livekitCallId, req) : undefined,
+              startUtc: new Date(event.start_time),
+              endUtc: new Date(event.end_time),
+              sequence: 0,
+            });
+          } catch (err: any) {
+            console.warn('[Calendar] email invite send failed (non-fatal):', err?.message || err);
+          }
+        })();
       }
     }
 
@@ -190,6 +332,9 @@ router.put('/events/:eventId', async (req: AuthRequest, res: Response) => {
 
     await client.query('BEGIN');
 
+    // Bump iCal SEQUENCE counter so recipient mail clients replace the
+    // existing entry instead of duplicating it. Combined with the bump in
+    // updated_at, this is the standard CalDAV update pattern.
     await client.query(
       `UPDATE calendar_events
        SET title = COALESCE($1, title),
@@ -199,6 +344,7 @@ router.put('/events/:eventId', async (req: AuthRequest, res: Response) => {
            is_all_day = COALESCE($5, is_all_day),
            location = COALESCE($6, location),
            color = COALESCE($7, color),
+           ical_sequence = ical_sequence + 1,
            updated_at = NOW()
        WHERE id = $8`,
       [title, description, start_time, end_time, is_all_day, location, color, eventId]
@@ -234,16 +380,45 @@ router.put('/events/:eventId', async (req: AuthRequest, res: Response) => {
       [eventId]
     );
 
-    // Notify attendees
+    // Notify attendees (real-time, in-app)
     const io = getIO();
-    const attendees = fullResult.rows[0]?.attendees || [];
+    const updatedEvent = fullResult.rows[0];
+    const attendees = updatedEvent?.attendees || [];
     for (const att of attendees) {
       if (att.user_id !== userId) {
-        io.to(`user:${att.user_id}`).emit('calendar:event-updated', { event: fullResult.rows[0] });
+        io.to(`user:${att.user_id}`).emit('calendar:event-updated', { event: updatedEvent });
       }
     }
 
-    res.json({ event: fullResult.rows[0] });
+    // ── Send .ics update emails (fire-and-forget) ──
+    // Recipient calendars replace the existing entry because the UID stays
+    // the same and SEQUENCE is bumped.
+    const otherAttendees = (attendees as any[]).filter((a) => a.user_id !== userId);
+    if (otherAttendees.length > 0) {
+      const recipientIds = otherAttendees.map((a) => a.user_id);
+      (async () => {
+        try {
+          const recipients = await resolveRecipients(recipientIds);
+          if (recipients.length === 0) return;
+          await sendUpdate({
+            uid: updatedEvent.id,
+            organiserUserId: userId,
+            recipients,
+            title: updatedEvent.title,
+            description: updatedEvent.description || undefined,
+            location: updatedEvent.location || undefined,
+            meetingUrl: updatedEvent.livekit_call_id ? buildMeetingUrl(updatedEvent.livekit_call_id, req) : undefined,
+            startUtc: new Date(updatedEvent.start_time),
+            endUtc: new Date(updatedEvent.end_time),
+            sequence: updatedEvent.ical_sequence || 1,
+          });
+        } catch (err: any) {
+          console.warn('[Calendar] email update send failed (non-fatal):', err?.message || err);
+        }
+      })();
+    }
+
+    res.json({ event: updatedEvent });
   } catch (err: any) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });
@@ -257,27 +432,73 @@ router.put('/events/:eventId', async (req: AuthRequest, res: Response) => {
 router.delete('/events/:eventId', async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.userId;
-    const eventId = req.params.eventId;
+    const eventId = String(req.params.eventId);
 
-    // Get attendees before delete for notification
+    // ── Capture event details + attendees BEFORE deletion ──
+    // Needed for the cancellation .ics email (we need title/time/etc) and the
+    // SEQUENCE bump for proper iCal etiquette.
+    const snapshot = await query(
+      `SELECT e.*, u.display_name as creator_name
+         FROM calendar_events e
+         LEFT JOIN users u ON u.id = e.created_by
+        WHERE e.id = $1 AND e.created_by = $2`,
+      [eventId, userId],
+    );
+    if (snapshot.rows.length === 0) {
+      return res.status(403).json({ error: 'Only the event creator can delete' });
+    }
+    const ev = snapshot.rows[0];
+
     const attendeesResult = await query(
       'SELECT user_id FROM event_attendees WHERE event_id = $1 AND user_id != $2',
       [eventId, userId]
     );
+    const recipientIds = attendeesResult.rows.map((r: any) => r.user_id);
 
-    const result = await query(
-      'DELETE FROM calendar_events WHERE id = $1 AND created_by = $2 RETURNING id',
-      [eventId, userId]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(403).json({ error: 'Only the event creator can delete' });
+    // End the associated LiveKit call (if online meeting) — anyone trying to
+    // join via a stale link after this will see "Meeting has ended".
+    if (ev.livekit_call_id) {
+      await query(
+        `UPDATE call_history
+            SET status = 'ended', ended_at = NOW()
+          WHERE id = $1 AND status != 'ended'`,
+        [ev.livekit_call_id],
+      );
     }
 
-    // Notify attendees
+    // Now delete the event row (ON DELETE CASCADE clears event_attendees)
+    await query('DELETE FROM calendar_events WHERE id = $1', [eventId]);
+
+    // In-app real-time notification
     const io = getIO();
     for (const att of attendeesResult.rows) {
       io.to(`user:${att.user_id}`).emit('calendar:event-deleted', { eventId });
+    }
+
+    // ── Send .ics cancellation emails (fire-and-forget) ──
+    // METHOD=CANCEL — recipient calendars auto-remove the entry.
+    if (recipientIds.length > 0) {
+      const cancelSeq = (ev.ical_sequence || 0) + 1;
+      (async () => {
+        try {
+          const recipients = await resolveRecipients(recipientIds);
+          if (recipients.length === 0) return;
+          await sendCancellation({
+            uid: eventId,
+            organiserUserId: userId,
+            recipients,
+            title: ev.title,
+            description: ev.description || undefined,
+            location: ev.location || undefined,
+            meetingUrl: ev.livekit_call_id ? buildMeetingUrl(ev.livekit_call_id, req) : undefined,
+            startUtc: new Date(ev.start_time),
+            endUtc: new Date(ev.end_time),
+            sequence: cancelSeq,
+          });
+        } catch (err: any) {
+          console.warn('[Calendar] cancellation email send failed (non-fatal):', err?.message || err);
+        }
+      })();
     }
 
     res.json({ success: true });

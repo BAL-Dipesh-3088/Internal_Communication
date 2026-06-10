@@ -40,6 +40,13 @@ export default function AppLayout() {
   // Check if we're inside a chat conversation (URL like /chat/some-id)
   const isInConversation = /^\/chat\/.+/.test(location.pathname);
   const isAdminRoute = location.pathname === '/admin';
+  // The shareable meeting-join page is a real route rendered through <Outlet/>.
+  // The main content area below is normally driven by `sidebarTab` (calendar /
+  // calls / email windows are state-based, not routes), which would otherwise
+  // keep covering the Outlet. So when we're on /meeting/:callId we must force
+  // the Outlet to render regardless of which tab was last active — this is what
+  // makes the in-app "Join meeting" button (e.g. from the calendar) actually work.
+  const isMeetingRoute = /^\/meeting\/.+/.test(location.pathname);
 
   // On mobile, auto-close sidebar when a conversation is selected
   useEffect(() => {
@@ -375,7 +382,7 @@ export default function AppLayout() {
         )}
 
         <main style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
-          {sidebarTab === 'email' && !isAdminRoute ? <EmailWindow /> : sidebarTab === 'calls' && !isAdminRoute ? <CallsWindow /> : sidebarTab === 'calendar' && !isAdminRoute ? <CalendarWindow /> : <Outlet />}
+          {isMeetingRoute ? <Outlet /> : sidebarTab === 'email' && !isAdminRoute ? <EmailWindow /> : sidebarTab === 'calls' && !isAdminRoute ? <CallsWindow /> : sidebarTab === 'calendar' && !isAdminRoute ? <CalendarWindow /> : <Outlet />}
         </main>
       </div>
       {/* Call Overlays */}

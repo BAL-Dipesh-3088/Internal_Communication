@@ -216,7 +216,11 @@ router.get('/:callId/info', async (req: AuthRequest, res: Response) => {
     let liveMetadata: string | null = null;
     let resolvedStatus: string = row.status;
 
-    if (row.livekit_room_name && row.status !== 'ended') {
+    // Only reconcile with LiveKit for ACTIVE calls. 'scheduled' calls have no
+    // live room yet — the LiveKit room is auto-created when the first
+    // participant joins. Running the reconciler on them would falsely mark
+    // every future calendar meeting as ended.
+    if (row.livekit_room_name && row.status !== 'ended' && row.status !== 'scheduled') {
       try {
         const list = await livekit.listParticipants(row.livekit_room_name);
         livePresent = list.length;
@@ -482,7 +486,7 @@ router.post('/:callId/join', async (req: AuthRequest, res: Response) => {
         existing.displayName = existing.displayName || displayName;
       }
       await query(
-        `UPDATE call_history SET participants = $1, status = CASE WHEN status = 'ringing' THEN 'answered' ELSE status END
+        `UPDATE call_history SET participants = $1, status = CASE WHEN status IN ('ringing', 'scheduled') THEN 'answered' ELSE status END
            WHERE id = $2`,
         [JSON.stringify(participants), callId],
       );
