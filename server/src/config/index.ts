@@ -3,6 +3,20 @@ import path from 'path';
 
 dotenv.config({ path: path.join(__dirname, '../../.env') });
 
+// ─── Production safety gate ──────────────────────────────────────────────────
+// The JWT secrets sign every session token. If they were ever missing in
+// production, the fallbacks below ('dev_secret' etc.) would let anyone forge
+// admin tokens. Refuse to boot instead of running silently insecure.
+if (process.env.NODE_ENV === 'production') {
+  const missing = ['JWT_SECRET', 'JWT_REFRESH_SECRET'].filter((k) => !process.env[k]);
+  if (missing.length > 0) {
+    throw new Error(
+      `[CONFIG] Refusing to start in production without ${missing.join(', ')}. ` +
+        'Set them in the environment (docker-compose.yml / server .env).'
+    );
+  }
+}
+
 export const config = {
   port: parseInt(process.env.PORT || '3000', 10),
   nodeEnv: process.env.NODE_ENV || 'development',

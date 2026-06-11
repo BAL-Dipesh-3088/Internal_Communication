@@ -556,4 +556,53 @@ router.get('/imap-test', async (_req: AuthRequest, res: Response) => {
   }
 });
 
+// ─── PINS (Outlook-style "keep at top of folder") ─────────────────
+// Per-user, server-persisted so pins survive refreshes and follow the
+// user across machines. `email_key` = inbox IMAP UID or sent_emails UUID.
+
+// GET /api/email/pins — all pinned email keys for the current user
+router.get('/pins', async (req: AuthRequest, res: Response) => {
+  try {
+    const result = await query(
+      'SELECT email_key FROM email_pins WHERE user_id = $1 ORDER BY pinned_at DESC',
+      [req.user!.userId],
+    );
+    res.json({ pins: result.rows.map((r: any) => r.email_key) });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/email/pins — pin a message. Body: { emailKey }
+router.post('/pins', async (req: AuthRequest, res: Response) => {
+  try {
+    const emailKey = String(req.body?.emailKey || '').trim();
+    if (!emailKey) return res.status(400).json({ error: 'emailKey required' });
+    if (emailKey.length > 512) return res.status(400).json({ error: 'emailKey too long' });
+    await query(
+      `INSERT INTO email_pins (user_id, email_key) VALUES ($1, $2)
+       ON CONFLICT (user_id, email_key) DO UPDATE SET pinned_at = NOW()`,
+      [req.user!.userId, emailKey],
+    );
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/email/pins/:emailKey — unpin a message
+router.delete('/pins/:emailKey', async (req: AuthRequest, res: Response) => {
+  try {
+    const emailKey = String(req.params.emailKey || '').trim();
+    if (!emailKey) return res.status(400).json({ error: 'emailKey required' });
+    await query(
+      'DELETE FROM email_pins WHERE user_id = $1 AND email_key = $2',
+      [req.user!.userId, emailKey],
+    );
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;

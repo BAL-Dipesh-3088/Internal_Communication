@@ -12,16 +12,26 @@ import {
   Hand,
   MousePointer2,
   Shield,
+  UserPlus,
+  Search,
+  X,
+  Loader2,
 } from 'lucide-react';
 import { useCallStore } from '@/stores/callStore';
 import { getSocket } from '@/services/socket';
+import api from '@/services/api';
 import { webrtcService } from '@/services/webrtc';
 import type { PointerEvent as RemotePointerEvent } from '@/services/webrtc';
 
 export default function ActiveCallOverlay() {
-  const { currentCall, hangup, toggleMute, toggleVideo, startScreenShare, stopScreenShare, isScreenSharing } = useCallStore();
+  const { currentCall, hangup, toggleMute, toggleVideo, startScreenShare, stopScreenShare, isScreenSharing, escalateToGroup } = useCallStore();
+  const [showAddPanel, setShowAddPanel] = useState(false);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  // Dedicated audio sink for AUDIO-ONLY calls. Without this the remote stream
+  // has no media element to play through, so no one hears anyone (video calls
+  // worked only because the <video> element also plays the audio track).
+  const remoteAudioRef = useRef<HTMLAudioElement>(null);
   const [isExpanded, setIsExpanded] = useState(true);
   const [duration, setDuration] = useState('00:00');
   const [hoveredBtn, setHoveredBtn] = useState<string | null>(null);
@@ -163,6 +173,11 @@ export default function ActiveCallOverlay() {
     if (remoteVideoRef.current && currentCall.remoteStream) {
       remoteVideoRef.current.srcObject = currentCall.remoteStream;
       remoteVideoRef.current.play().catch(() => {});
+    }
+    // Audio-only calls have no <video>; route the remote stream to the <audio> sink.
+    if (remoteAudioRef.current && currentCall.remoteStream) {
+      remoteAudioRef.current.srcObject = currentCall.remoteStream;
+      remoteAudioRef.current.play().catch(() => {});
     }
     if (localVideoRef.current && currentCall.localStream) {
       localVideoRef.current.srcObject = currentCall.localStream;
@@ -312,6 +327,9 @@ export default function ActiveCallOverlay() {
             End
           </button>
         </div>
+
+        {/* Keep audio playing while the call is minimized (audio + video calls). */}
+        <audio ref={remoteAudioRef} autoPlay />
 
         <style>{`
           @keyframes callPulse {
@@ -538,6 +556,8 @@ export default function ActiveCallOverlay() {
               {currentCall.remoteName || 'Unknown'}
             </h3>
             <p style={{ color: 'rgba(255,255,255,0.5)', marginTop: 8, fontSize: 16 }}>{duration}</p>
+            {/* Hidden audio sink — plays the remote participant's voice */}
+            <audio ref={remoteAudioRef} autoPlay />
           </div>
         )}
       </div>
@@ -602,6 +622,20 @@ export default function ActiveCallOverlay() {
           setHoveredBtn={setHoveredBtn}
         />
 
+        {/* Add people — escalates the 1:1 into a group call (Teams-style).
+            Only shown when the call is linked to a conversation. */}
+        {currentCall.conversationId && (
+          <CallButton
+            icon={<UserPlus size={22} />}
+            label="Add people"
+            active={showAddPanel}
+            onClick={() => setShowAddPanel((v) => !v)}
+            id="add"
+            hoveredBtn={hoveredBtn}
+            setHoveredBtn={setHoveredBtn}
+          />
+        )}
+
         {/* Hang Up */}
         <button
           onClick={() => hangup(currentCall.id)}
@@ -620,6 +654,134 @@ export default function ActiveCallOverlay() {
         >
           <PhoneOff size={24} />
         </button>
+      </div>
+
+      {showAddPanel && currentCall.conversationId && (
+        <AddPeoplePanel
+          excludeUserId={currentCall.remoteUserId}
+          onClose={() => setShowAddPanel(false)}
+          onPick={async (userId) => {
+            setShowAddPanel(false);
+            await escalateToGroup(userId);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── Add-people panel (1:1 → group escalation) ──────────────────────────────
+interface AddSearchUser {
+  id: string;
+  display_name: string;
+  email: string;
+  department: string | null;
+  avatar_url: string | null;
+}
+
+function AddPeoplePanel({
+  excludeUserId,
+  onClose,
+  onPick,
+}: {
+  excludeUserId: string;
+  onClose: () => void;
+  onPick: (userId: string) => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<AddSearchUser[]>([]);
+  const [loading, setLoading] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    const trimmed = query.trim();
+    setLoading(true);
+    const run = () => {
+      api.get('/users', { params: trimmed ? { search: trimmed } : undefined })
+        .then(({ data }) => {
+          setResults((data?.users || []).filter((u: AddSearchUser) => u.id !== excludeUserId));
+          setLoading(false);
+        })
+        .catch(() => { setResults([]); setLoading(false); });
+    };
+    if (!trimmed) run();
+    else debounceRef.current = setTimeout(run, 250);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [query, excludeUserId]);
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'absolute', inset: 0, zIndex: 20,
+        background: 'rgba(0,0,0,0.5)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: 380, maxWidth: '90%', maxHeight: '70%',
+          background: '#1A1A2E', border: '1px solid #2A2A45', borderRadius: 14,
+          display: 'flex', flexDirection: 'column', color: '#fff',
+          boxShadow: '0 20px 60px rgba(0,0,0,0.5)', overflow: 'hidden',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', borderBottom: '1px solid #2A2A45' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <UserPlus size={16} />
+            <h3 style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>Add people to this call</h3>
+          </div>
+          <button onClick={onClose} aria-label="Close" style={{ background: 'transparent', border: 'none', color: '#8B8CA7', cursor: 'pointer', display: 'flex' }}>
+            <X size={16} />
+          </button>
+        </div>
+
+        <div style={{ padding: '12px 16px 8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: '#0F0F1F', border: '1px solid #2A2A45', borderRadius: 8, padding: '8px 10px' }}>
+            <Search size={14} color="#8B8CA7" />
+            <input
+              ref={inputRef}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search by name or email…"
+              style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: '#fff', fontSize: 13, fontFamily: 'inherit', minWidth: 0 }}
+            />
+            {loading && <Loader2 size={14} color="#8B8CA7" style={{ animation: 'spin 1s linear infinite' }} />}
+          </div>
+        </div>
+
+        <div style={{ flex: 1, overflowY: 'auto', minHeight: 0, padding: '4px 8px 12px' }}>
+          {!loading && results.length === 0 && (
+            <div style={{ padding: '20px 8px', fontSize: 12, color: '#8B8CA7', textAlign: 'center' }}>
+              {query.trim() ? `No users match "${query}".` : 'No other users found.'}
+            </div>
+          )}
+          {results.map((u) => (
+            <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 8 }}>
+              <div style={{ width: 32, height: 32, borderRadius: '50%', background: '#6264A7', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, flexShrink: 0, overflow: 'hidden' }}>
+                {u.avatar_url ? <img src={u.avatar_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : (u.display_name || u.email || '?').charAt(0).toUpperCase()}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{u.display_name || u.email}</div>
+                <div style={{ fontSize: 11, color: '#8B8CA7', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{u.department || u.email}</div>
+              </div>
+              <button
+                onClick={() => onPick(u.id)}
+                style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 6, background: '#6264A7', color: '#fff', border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600, fontFamily: 'inherit', flexShrink: 0 }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = '#7172B3'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = '#6264A7'; }}
+              >
+                <UserPlus size={11} /> Add
+              </button>
+            </div>
+          ))}
+        </div>
+        <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
       </div>
     </div>
   );

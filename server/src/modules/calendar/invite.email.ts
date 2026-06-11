@@ -309,22 +309,36 @@ function buildPlainText(
 
 // ─── Format helpers ───────────────────────────────────────────────────────────
 
+// Display timezone for invite emails. The Node process TZ differs per host
+// (laptop = Asia/Calcutta, Docker container defaults to UTC), which made the
+// SAME meeting render different wall-clock times depending on where the email
+// was generated. Pin it to a fixed company timezone so every recipient sees
+// the time the organiser intended, regardless of server TZ. Configurable via
+// env for multi-region deployments. (The .ics attachment stays in UTC — mail
+// clients convert that to each viewer's own zone, which is correct.)
+const DISPLAY_TZ = process.env.INVITE_TIMEZONE || 'Asia/Kolkata';
+
 function formatLongDate(d: Date): string {
   return d.toLocaleDateString('en-US', {
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+    timeZone: DISPLAY_TZ,
   });
 }
 
 function formatTime(d: Date): string {
   return d.toLocaleTimeString('en-US', {
     hour: 'numeric', minute: '2-digit', hour12: true,
+    timeZone: DISPLAY_TZ,
   });
 }
 
 function getTimezoneName(): string {
   try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: DISPLAY_TZ, timeZoneName: 'long',
+    }).formatToParts(new Date());
+    return parts.find((p) => p.type === 'timeZoneName')?.value || DISPLAY_TZ;
   } catch {
-    return 'UTC';
+    return DISPLAY_TZ;
   }
 }

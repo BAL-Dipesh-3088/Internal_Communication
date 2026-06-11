@@ -132,6 +132,9 @@ interface CallState {
 
   // Group call actions (LiveKit-backed)
   startGroupCall: (conversationId: string, callType: CallType, groupName?: string) => Promise<void>;
+  // Teams-style escalation: turn the active 1:1 WebRTC call into a LiveKit group
+  // call and add `inviteeUserId`. The existing peer auto-transitions.
+  escalateToGroup: (inviteeUserId: string) => Promise<void>;
   acceptGroupInvite: (callId: string) => Promise<void>;
   declineGroupInvite: (callId: string) => Promise<void>;
   receiveGroupInvite: (invite: IncomingGroupCallInvite) => void;
@@ -242,6 +245,45 @@ export const useCallStore = create<CallState>((set, get) => {
         if (useCallStore.getState().groupCall?.callId === invite.callId) return;
 
         useCallStore.getState().receiveGroupInvite(invite);
+      });
+
+      // Teams-style escalation — the OTHER 1:1 participant is auto-moved from
+      // the WebRTC 1:1 into the new LiveKit group room (no accept prompt: they
+      // were already talking to the host). The host who started it ignores this
+      // (they set up the group call locally in escalateToGroup).
+      socket.on('call:escalate-to-group', async (data: {
+        callId: string; conversationId: string; callType: CallType;
+        roomName: string; hostId: string; hostName: string; startedAt: string;
+      }) => {
+        const me = useAuthStore.getState().user?.id;
+        if (me && data.hostId === me) return;                       // host already handled it
+        if (useCallStore.getState().groupCall?.callId === data.callId) return; // already in it
+        try {
+          const result = await livekitApi.joinGroupCall(data.callId);
+          ringtoneHandle?.stop();
+          ringtoneHandle = null;
+          set({
+            incomingGroupInvite: null,
+            groupCall: {
+              isActive: true,
+              conversationId: data.conversationId,
+              callType: data.callType,
+              groupName: '',
+              participants: [],
+              startTime: new Date(),
+              callId: data.callId,
+              livekitToken: result.livekit.token,
+              livekitWsUrl: result.livekit.wsUrl,
+              livekitRoomName: result.livekit.roomName,
+              isHost: false,
+            },
+          });
+          playCallConnectedChime();
+          // Tear down the existing 1:1 WebRTC call(s) — replaced by the group call.
+          webrtcService.calls.forEach((c) => webrtcService.hangup(c.id));
+        } catch (err: any) {
+          console.error('[CallStore] escalate auto-join failed:', err?.response?.data?.error || err.message);
+        }
       });
 
       socket.on('group-call:ended', (data: { callId: string; endedBy?: string }) => {
@@ -360,6 +402,41 @@ export const useCallStore = create<CallState>((set, get) => {
       } catch (err: any) {
         console.error('[CallStore] startGroupCall failed:', err?.response?.data?.error || err.message);
         alert('Failed to start group call: ' + (err?.response?.data?.error || err.message));
+      }
+    },
+
+    escalateToGroup: async (inviteeUserId) => {
+      const call = useCallStore.getState().currentCall;
+      if (!call) return;
+      if (!call.conversationId) {
+        alert('Adding people requires this call to be linked to a conversation. Start the call from a chat to use this.');
+        return;
+      }
+      try {
+        const result = await livekitApi.escalateToGroupCall(
+          call.conversationId, call.callType, call.remoteUserId, inviteeUserId,
+        );
+        set({
+          groupCall: {
+            isActive: true,
+            conversationId: call.conversationId,
+            callType: call.callType,
+            groupName: '',
+            participants: [],
+            startTime: new Date(),
+            callId: result.callId,
+            livekitToken: result.livekit.token,
+            livekitWsUrl: result.livekit.wsUrl,
+            livekitRoomName: result.livekit.roomName,
+            isHost: true,
+          },
+        });
+        playCallConnectedChime();
+        // End the 1:1 WebRTC call — the group call replaces it.
+        webrtcService.hangup(call.id);
+      } catch (err: any) {
+        console.error('[CallStore] escalateToGroup failed:', err?.response?.data?.error || err.message);
+        alert('Failed to add people: ' + (err?.response?.data?.error || err.message));
       }
     },
 

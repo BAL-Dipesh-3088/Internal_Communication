@@ -40,6 +40,24 @@ export async function joinGroupCall(callId: string): Promise<GroupCallJoinRespon
   return data;
 }
 
+/**
+ * Teams-style escalation: turn the current 1:1 (WebRTC) call into a LiveKit
+ * group call so people can be added. The other 1:1 participant (`peerUserId`)
+ * is auto-moved into the new room; `inviteeUserId` is rung like a normal invite.
+ * Returns the caller/host's own join credentials.
+ */
+export async function escalateToGroupCall(
+  conversationId: string,
+  callType: 'audio' | 'video',
+  peerUserId: string,
+  inviteeUserId: string,
+): Promise<GroupCallStartResponse> {
+  const { data } = await api.post('/calls/group/escalate', {
+    conversationId, callType, peerUserId, inviteeUserId,
+  });
+  return data;
+}
+
 /** Callee declines an incoming ring — backend marks declined for analytics. */
 export async function declineGroupCall(callId: string): Promise<void> {
   await api.post(`/calls/group/${callId}/decline`);

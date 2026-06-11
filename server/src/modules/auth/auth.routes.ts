@@ -1,10 +1,33 @@
 import { Router, Request, Response } from 'express';
+import rateLimit from 'express-rate-limit';
 import { AuthService } from './auth.service';
 import { authMiddleware, AuthRequest } from '../../middleware/auth';
 import { z } from 'zod';
 
 const router = Router();
 const authService = new AuthService();
+
+// Brute-force protection on credential endpoints. Each office machine has its
+// own LAN IP, so a per-IP limit doesn't punish other users. 20 attempts per
+// 15 minutes is far above any honest user's typo rate, while making password
+// guessing impractical. successful requests don't count against the limit.
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  skipSuccessfulRequests: true,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many login attempts. Try again in a few minutes.' },
+});
+
+// Registration is rarely repeated by an honest user — keep it tight.
+const registerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many registration attempts. Try again later.' },
+});
 
 const registerSchema = z.object({
   username: z.string().min(3).max(50).regex(/^[a-zA-Z0-9_]+$/),
@@ -30,7 +53,7 @@ const loginSchema = z.object({
 });
 
 // POST /api/auth/register
-router.post('/register', async (req: Request, res: Response) => {
+router.post('/register', registerLimiter, async (req: Request, res: Response) => {
   try {
     const input = registerSchema.parse(req.body);
     const result = await authService.register(input);
@@ -44,7 +67,7 @@ router.post('/register', async (req: Request, res: Response) => {
 });
 
 // POST /api/auth/login
-router.post('/login', async (req: Request, res: Response) => {
+router.post('/login', loginLimiter, async (req: Request, res: Response) => {
   try {
     const input = loginSchema.parse(req.body);
     const result = await authService.login(input);

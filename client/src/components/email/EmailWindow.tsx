@@ -3,7 +3,7 @@ import {
   Mail, Send, Paperclip, Bold, Italic, Underline, Link2, Image,
   Reply, ReplyAll, Forward, Trash2, Archive, Star, StarOff,
   ChevronDown, Plus, Inbox, SendHorizontal, FileText, Users,
-  Search, MoreVertical, X, RefreshCw, Loader,
+  Search, MoreVertical, X, RefreshCw, Loader, Pin, PinOff,
 } from 'lucide-react';
 import DOMPurify from 'dompurify';
 import { useAuthStore } from '@/stores/authStore';
@@ -52,7 +52,7 @@ function getAvatarColor(name: string): string {
    =================================================================== */
 export default function EmailWindow() {
   const { user } = useAuthStore();
-  const [activeFolder, setActiveFolder] = useState('sent');
+  const [activeFolder, setActiveFolder] = useState('inbox');
   const [selectedEmailId, setSelectedEmailId] = useState<string | null>(null);
   const [composing, setComposing] = useState(false);
   const [editingDraft, setEditingDraft] = useState<any>(null);
@@ -80,6 +80,38 @@ export default function EmailWindow() {
     } catch { /* ignore */ }
   };
 
+  // ─── Pins (Outlook-style "keep at top of folder") ────────────────────────
+  // Server-persisted per user (email_pins table) so pins survive refreshes
+  // and follow the user across machines.
+  const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    api.get('/email/pins')
+      .then(({ data }) => setPinnedIds(new Set((data?.pins || []).map(String))))
+      .catch(() => { /* pins are non-critical; start empty */ });
+  }, []);
+
+  const handleTogglePin = async (id: string) => {
+    const key = String(id);
+    const isPinned = pinnedIds.has(key);
+    // Optimistic update — revert on failure
+    setPinnedIds(prev => {
+      const next = new Set(prev);
+      if (isPinned) next.delete(key); else next.add(key);
+      return next;
+    });
+    try {
+      if (isPinned) await api.delete(`/email/pins/${encodeURIComponent(key)}`);
+      else await api.post('/email/pins', { emailKey: key });
+    } catch {
+      setPinnedIds(prev => {
+        const next = new Set(prev);
+        if (isPinned) next.add(key); else next.delete(key);
+        return next;
+      });
+    }
+  };
+
   // Fetch folder counts
   const loadCounts = async () => {
     try {
@@ -104,7 +136,10 @@ export default function EmailWindow() {
       const normalized = (data.emails || []).map((e: any) => ({
         id: e.id || e.uid?.toString(),
         from: e.from || user?.display_name || 'You',
-        fromEmail: e.fromEmail || 'it.helpdesk@balasorealloys.com',
+        // Sent/drafts/deleted rows come from our own sent_emails table which has
+        // no sender columns — the sender IS the logged-in user. Inbox rows carry
+        // the real sender from IMAP; never substitute anything there.
+        fromEmail: e.fromEmail || (f === 'inbox' ? '' : (user?.email || '')),
         to: typeof e.to_addresses === 'string' ? JSON.parse(e.to_addresses) : (e.to_addresses || e.to || []),
         cc: typeof e.cc_addresses === 'string' ? JSON.parse(e.cc_addresses) : (e.cc_addresses || e.cc || []),
         subject: e.subject || '(No subject)',
@@ -447,16 +482,47 @@ export default function EmailWindow() {
               <p style={{ fontSize: 13, color: '#8B8CA7', margin: 0 }}>No emails in this folder</p>
             </div>
           ) : (
-            filteredEmails.map(email => (
-              <EmailListItem
-                key={email.id}
-                email={email}
-                selected={selectedEmailId === email.id}
-                onSelect={() => activeFolder === 'drafts' ? handleOpenDraft(email) : handleSelectEmail(email.id)}
-                onStar={() => handleToggleStar(email.id)}
-                onDelete={() => activeFolder === 'deleted' ? handleRestore(email.id) : handleDelete(email.id)}
-              />
-            ))
+            (() => {
+              // Outlook-style: pinned messages float in a "Pinned" section on top
+              const pinned = filteredEmails.filter(e => pinnedIds.has(String(e.id)));
+              const rest = filteredEmails.filter(e => !pinnedIds.has(String(e.id)));
+              const renderItem = (email: any) => (
+                <EmailListItem
+                  key={email.id}
+                  email={email}
+                  selected={selectedEmailId === email.id}
+                  pinned={pinnedIds.has(String(email.id))}
+                  onSelect={() => activeFolder === 'drafts' ? handleOpenDraft(email) : handleSelectEmail(email.id)}
+                  onStar={() => handleToggleStar(email.id)}
+                  onPin={() => handleTogglePin(email.id)}
+                  onDelete={() => activeFolder === 'deleted' ? handleRestore(email.id) : handleDelete(email.id)}
+                />
+              );
+              return (
+                <>
+                  {pinned.length > 0 && (
+                    <>
+                      <div style={{
+                        display: 'flex', alignItems: 'center', gap: 6, padding: '8px 16px 4px',
+                        fontSize: 11, fontWeight: 700, color: '#605E5C', textTransform: 'uppercase', letterSpacing: 0.4,
+                      }}>
+                        <Pin size={11} /> Pinned
+                      </div>
+                      {pinned.map(renderItem)}
+                      {rest.length > 0 && (
+                        <div style={{
+                          padding: '8px 16px 4px',
+                          fontSize: 11, fontWeight: 700, color: '#605E5C', textTransform: 'uppercase', letterSpacing: 0.4,
+                        }}>
+                          Other
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {rest.map(renderItem)}
+                </>
+              );
+            })()
           )}
         </div>
       </div>
@@ -536,9 +602,33 @@ function FolderItem({ folder, active, onClick }: { folder: any; active: boolean;
 /* ===================================================================
    EMAIL LIST ITEM
    =================================================================== */
-function EmailListItem({ email, selected, onSelect, onStar, onDelete }: { email: any; selected: boolean; onSelect: () => void; onStar: () => void; onDelete: () => void }) {
+/** "swastik.roychoudhury@x.in" → "Swastik Roychoudhury" — display name from an address. */
+function nameFromAddress(addr: string): string {
+  const local = String(addr || '').split('@')[0];
+  if (!local) return addr || '';
+  return local
+    .split(/[._-]+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+}
+
+/** Outlook-style recipient line for Sent/Drafts: "Partha Bhattacharya" or "A, B +2". */
+function recipientLabel(to: string[] | undefined): string {
+  const list = Array.isArray(to) ? to.filter(Boolean) : [];
+  if (list.length === 0) return '(No recipients)';
+  const names = list.map(nameFromAddress);
+  return names.length > 2 ? `${names.slice(0, 2).join(', ')} +${names.length - 2}` : names.join(', ');
+}
+
+function EmailListItem({ email, selected, pinned, onSelect, onStar, onPin, onDelete }: { email: any; selected: boolean; pinned?: boolean; onSelect: () => void; onStar: () => void; onPin?: () => void; onDelete: () => void }) {
   const [hovered, setHovered] = useState(false);
-  const color = getAvatarColor(email.from);
+  // Outlook behaviour: folders of OUTGOING mail (Sent, Drafts, Deleted-from-sent)
+  // show WHO IT WAS SENT TO; the inbox shows who it came from.
+  const isOutgoing = email.folder === 'sent' || email.folder === 'drafts' || email.folder === 'deleted';
+  const displayName = isOutgoing ? recipientLabel(email.to) : email.from;
+  const avatarSeed = isOutgoing ? (email.to?.[0] ? nameFromAddress(email.to[0]) : 'No recipients') : email.from;
+  const color = getAvatarColor(avatarSeed);
 
   return (
     <div
@@ -560,7 +650,7 @@ function EmailListItem({ email, selected, onSelect, onStar, onDelete }: { email:
           color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
           fontSize: 13, fontWeight: 600, marginTop: email.isRead ? 12 : 0,
         }}>
-          {getInitials(email.from)}
+          {getInitials(avatarSeed)}
         </div>
       </div>
 
@@ -568,7 +658,7 @@ function EmailListItem({ email, selected, onSelect, onStar, onDelete }: { email:
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2 }}>
           <span style={{ fontSize: 13, fontWeight: email.isRead ? 400 : 700, color: '#242424', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-            {email.from}
+            {displayName}
           </span>
           <span style={{ fontSize: 11, color: '#8B8CA7', flexShrink: 0, marginLeft: 8 }}>
             {formatEmailDate(email.date)}
@@ -582,11 +672,22 @@ function EmailListItem({ email, selected, onSelect, onStar, onDelete }: { email:
             {email.preview}
           </p>
           {email.attachments?.length > 0 && <Paperclip size={12} color="#8B8CA7" style={{ flexShrink: 0 }} />}
+          {/* Always-visible pin indicator (Outlook shows the pin even unhovered) */}
+          {pinned && !hovered && <Pin size={12} color="#0078D4" fill="#0078D4" style={{ flexShrink: 0 }} />}
           {hovered && (
             <div style={{ display: 'flex', gap: 2, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
               <button onClick={onStar} style={{ width: 24, height: 24, borderRadius: 4, border: 'none', background: 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 {email.isStarred ? <Star size={13} fill="#FFB900" color="#FFB900" /> : <Star size={13} color="#8B8CA7" />}
               </button>
+              {onPin && (
+                <button
+                  onClick={onPin}
+                  title={pinned ? 'Unpin this message' : 'Keep this message at the top of your folder'}
+                  style={{ width: 24, height: 24, borderRadius: 4, border: 'none', background: 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                >
+                  {pinned ? <PinOff size={13} color="#0078D4" /> : <Pin size={13} color="#8B8CA7" />}
+                </button>
+              )}
               <button onClick={onDelete} style={{ width: 24, height: 24, borderRadius: 4, border: 'none', background: 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <Trash2 size={13} color="#D83B01" />
               </button>
@@ -1228,7 +1329,9 @@ function EmailReader({ email, onReply, onReplyAll, onForward, onDelete, onStar }
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <span style={{ fontSize: 14, fontWeight: 600, color: '#242424' }}>{email.from}</span>
-                <span style={{ fontSize: 12, color: '#8B8CA7' }}>&lt;{email.fromEmail}&gt;</span>
+                {email.fromEmail && (
+                  <span style={{ fontSize: 12, color: '#8B8CA7' }}>&lt;{email.fromEmail}&gt;</span>
+                )}
               </div>
               <div style={{ fontSize: 12, color: '#605E5C', marginTop: 3, lineHeight: 1.5 }}>
                 <span style={{ fontWeight: 600, color: '#8B8CA7' }}>To: </span>{(email.to || []).join('; ')}

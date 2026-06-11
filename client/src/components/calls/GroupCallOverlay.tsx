@@ -92,7 +92,18 @@ export default function GroupCallOverlay() {
           videoCodec: 'h264',
         },
       }}
-      style={{ height: '100vh' }}
+      // `display: contents` makes this wrapper generate NO box of its own — its
+      // children render as if they were direct children of the parent. Two wins:
+      //   1. It reserves NO layout space, so the dark theme background can't paint
+      //      a full 100vh block that shows when the call is minimized (the
+      //      original black-screen bug).
+      //   2. It creates NO stacking context, so the expanded overlay's z-index:9999
+      //      stays effective in the ROOT context and floats above the chat window.
+      //      (position:fixed here would TRAP that z-index inside the wrapper and
+      //      let the chat bleed over the call.)
+      // Both visible UI states (expanded overlay + minimized pill) are themselves
+      // position:fixed, so they don't need this wrapper to be sized.
+      style={{ display: 'contents' }}
       data-lk-theme="default"
     >
       <RoomAudioRenderer />

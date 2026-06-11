@@ -93,7 +93,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (data.user?.sip_password) {
         localStorage.setItem('sipPassword', data.user.sip_password);
       }
-      connectSocket(token);
+      // NOTE: do NOT pass the token captured above — if it was expired, the
+      // /auth/me call just rotated it via the 401 interceptor, and the old
+      // snapshot would poison the socket handshake. connectSocket reads the
+      // fresh token from localStorage on every attempt.
+      connectSocket();
       set({ user: data.user, isAuthenticated: true, isLoading: false });
     } catch {
       localStorage.removeItem('accessToken');

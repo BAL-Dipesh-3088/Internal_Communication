@@ -417,6 +417,96 @@ router.post('/start', async (req: AuthRequest, res: Response) => {
 });
 
 // ------------------------------------------------------------------
+// POST /api/calls/group/escalate
+// ------------------------------------------------------------------
+// Teams-style escalation: convert an active 1:1 WebRTC call into a LiveKit
+// group call so more people can be added. Both existing participants move into
+// a brand-new LiveKit room, and the first new person is rung immediately.
+//
+// Body: { conversationId, callType, peerUserId, inviteeUserId }
+//   - peerUserId    : the OTHER participant already in the 1:1 (auto-transitioned)
+//   - inviteeUserId : the new person being added (rung like a normal invite)
+// Returns (to the caller/host): { callId, livekit: { wsUrl, token, roomName } }
+router.post('/escalate', async (req: AuthRequest, res: Response) => {
+  try {
+    const { conversationId, callType, peerUserId, inviteeUserId } = req.body || {};
+    if (!conversationId) return res.status(400).json({ error: 'conversationId required' });
+    if (callType !== 'audio' && callType !== 'video') {
+      return res.status(400).json({ error: 'callType must be "audio" or "video"' });
+    }
+    if (!peerUserId) return res.status(400).json({ error: 'peerUserId required' });
+    if (!inviteeUserId) return res.status(400).json({ error: 'inviteeUserId required' });
+
+    const hostId = req.user!.userId;
+    if (!(await isConversationMember(conversationId, hostId))) {
+      return res.status(403).json({ error: 'Not a member of this conversation' });
+    }
+
+    const roomName = `gc-${conversationId.replace(/-/g, '').slice(0, 12)}-${Date.now().toString(36)}`;
+    try {
+      await livekit.createRoom(roomName, 30);
+    } catch (err: any) {
+      if (!String(err.message || '').toLowerCase().includes('already exists')) {
+        console.error('[GroupCall] escalate createRoom error:', err.message);
+        return res.status(502).json({ error: 'Failed to create LiveKit room: ' + err.message });
+      }
+    }
+
+    const hostName = await getDisplayName(hostId);
+    const peerName = await getDisplayName(peerUserId);
+    const inviteeName = await getDisplayName(inviteeUserId);
+
+    // Host token (admin/host privileges) — caller joins immediately with this.
+    const token = await livekit.generateAccessToken({
+      roomName, identity: hostId, name: hostName, isHost: true, ttlSeconds: 3600 * 4,
+    });
+
+    const callId = randomUUID();
+    const startedAt = new Date().toISOString();
+    const participants: CallParticipant[] = [
+      { userId: hostId, displayName: hostName, status: 'joined', joinedAt: startedAt },
+      { userId: peerUserId, displayName: peerName, status: 'invited', invitedBy: hostId, invitedAt: startedAt },
+      { userId: inviteeUserId, displayName: inviteeName, status: 'invited', invitedBy: hostId, invitedAt: startedAt },
+    ];
+
+    await query(
+      `INSERT INTO call_history (
+         id, caller_id, conversation_id, call_type, is_group_call, status,
+         participants, livekit_room_name, host_user_id, started_at
+       ) VALUES ($1, $2, $3, $4, TRUE, 'answered', $5, $6, $2, NOW())`,
+      [callId, hostId, conversationId, callType, JSON.stringify(participants), roomName],
+    );
+
+    const io = getIO();
+
+    // 1. Auto-transition the existing 1:1 peer — their client tears down WebRTC
+    //    and joins this LiveKit room (no accept modal; they're already in-call).
+    io.to(`user:${peerUserId}`).emit('call:escalate-to-group', {
+      callId, conversationId, callType, roomName, hostId, hostName, startedAt,
+    });
+
+    // 2. Ring the new invitee exactly like a normal group-call invite.
+    io.to(`user:${inviteeUserId}`).emit('group-call:incoming', {
+      callId, conversationId, callType, hostId, hostName, roomName, startedAt,
+      invitedBy: { userId: hostId, displayName: hostName },
+    });
+
+    // 3. Active-meeting marker for the conversation (banner / late-join).
+    io.to(`conv:${conversationId}`).emit('group-call:active', {
+      callId, conversationId, callType, hostId, hostName, roomName, startedAt,
+      participants: participants.map((p) => ({ userId: p.userId, displayName: p.displayName, joinedAt: startedAt })),
+    });
+
+    console.log(`[GroupCall] ${hostName} escalated 1:1 -> group ${callId} (peer=${peerName}, invitee=${inviteeName})`);
+
+    return res.json({ callId, livekit: { wsUrl: livekit.getClientWsUrl(), token, roomName } });
+  } catch (err: any) {
+    console.error('[GroupCall] escalate error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ------------------------------------------------------------------
 // POST /api/calls/group/:callId/join
 // ------------------------------------------------------------------
 // Returns: { livekit: { wsUrl, token, roomName } }
