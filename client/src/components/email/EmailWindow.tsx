@@ -8,7 +8,7 @@ import {
 import DOMPurify from 'dompurify';
 import { useAuthStore } from '@/stores/authStore';
 import api from '@/services/api';
-import { playMessageSound, showDesktopNotification } from '@/services/notification';
+import { useMailStore } from '@/stores/mailStore';
 
 /* ===================================================================
    FOLDER DEFINITIONS — counts are fetched dynamically from API
@@ -78,6 +78,8 @@ export default function EmailWindow() {
     try {
       localStorage.setItem('bal_read_emails', JSON.stringify([...readEmailIds.current]));
     } catch { /* ignore */ }
+    // Sidebar unread badge follows the same read-set — update it immediately
+    useMailStore.getState().recomputeUnread();
   };
 
   // ─── Pins (Outlook-style "keep at top of folder") ────────────────────────
@@ -162,19 +164,15 @@ export default function EmailWindow() {
         references: e.references || (e.email_references ? e.email_references.split(/\s+/).filter(Boolean) : undefined),
       }));
 
-      // Detect new inbox emails and play notification sound
-      if (f === 'inbox' && normalized.length > prevInboxCountRef.current && prevInboxCountRef.current > 0) {
-        const newCount = normalized.length - prevInboxCountRef.current;
-        playMessageSound();
-        showDesktopNotification({
-          title: 'New Email',
-          body: newCount === 1
-            ? `From: ${normalized[0]?.from} — ${normalized[0]?.subject}`
-            : `You have ${newCount} new emails`,
-          tag: 'email-new',
-        });
+      // New-mail sound/notification + sidebar badge are owned by the GLOBAL
+      // mailStore watcher (works app-wide, not just on this tab). Feeding our
+      // fetch into it keeps it current and prevents double notifications.
+      if (f === 'inbox') {
+        useMailStore.getState().ingestInbox(
+          normalized.map((m: any) => ({ id: String(m.id), from: m.from, subject: m.subject })),
+        );
+        prevInboxCountRef.current = normalized.length;
       }
-      if (f === 'inbox') prevInboxCountRef.current = normalized.length;
 
       setEmails(normalized);
     } catch (err: any) {

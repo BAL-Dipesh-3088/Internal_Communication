@@ -7,10 +7,11 @@ import AppLayout from '@/components/layout/AppLayout';
 import ChatWindow from '@/components/chat/ChatWindow';
 import AdminDashboard from '@/components/admin/AdminDashboard';
 import MeetingJoinPage from '@/components/calls/MeetingJoinPage';
+import ForcePasswordChange from '@/components/auth/ForcePasswordChange';
 import { Loader2 } from 'lucide-react';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, isLoading } = useAuthStore();
+  const { isAuthenticated, isLoading, user } = useAuthStore();
   const location = useLocation();
 
   if (isLoading) {
@@ -25,6 +26,14 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
     // Preserve the intended destination so LoginPage can return the user
     // there after authenticating. Used by the /meeting/:callId flow.
     return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
+  }
+
+  // Temporary-password gate: after onboarding or an admin reset the user MUST
+  // set their own password before reaching any part of the app (incl. meeting
+  // links). Rendering the gate here — instead of as a route — makes it
+  // impossible to bypass via URL navigation.
+  if (user?.must_change_password) {
+    return <ForcePasswordChange />;
   }
 
   return <>{children}</>;

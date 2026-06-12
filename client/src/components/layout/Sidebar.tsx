@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { useChatStore } from '@/stores/chatStore';
+import { useMailStore } from '@/stores/mailStore';
 import { useUIStore } from '@/stores/uiStore';
 import ConversationList from '../chat/ConversationList';
 import CreateConversationModal from '../chat/CreateConversationModal';
@@ -33,6 +34,7 @@ export default function Sidebar() {
   const [showSettings, setShowSettings] = useState(false);
 
   const totalUnread = conversations.reduce((sum, c) => sum + (Number(c.unread_count) || 0), 0);
+  const mailUnread = useMailStore((s) => s.unreadCount);
   const isAdmin = location.pathname === '/admin';
 
   const handleLogout = async () => {
@@ -115,6 +117,7 @@ export default function Sidebar() {
               icon={<Mail size={20} />}
               active={activeTab === 'email' && !isAdmin}
               onClick={() => { setActiveTab('email'); setSearchQuery(''); if (isAdmin) navigate('/'); }}
+              badge={mailUnread}
               label="Email"
             />
             {user?.role === 'admin' && (

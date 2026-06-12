@@ -1,15 +1,17 @@
-import React, { useEffect, useState } from 'react';
+﻿import React, { useEffect, useState } from 'react';
 import {
   Users, MessageSquare, FileText, Phone, Activity,
   Search, Shield, HardDrive, Wifi, WifiOff,
   RefreshCw, Clock, Database, Server,
-  CheckCircle, XCircle, AlertTriangle, PhoneCall,
+  CheckCircle, XCircle, AlertTriangle, IdCard, Heart,
   Link, Unlink, Loader, X, Eye, Paperclip, Image, Download,
   UserPlus,
 } from 'lucide-react';
 import api from '@/services/api';
 import MailAccountSection, { MailStatusBadge } from './MailAccountSection';
 import OnboardTab from './OnboardTab';
+import EmployeeIdsTab from './EmployeeIdsTab';
+import FeedbackTab from './FeedbackTab';
 
 interface DashboardStats {
   users: { total: number; online: number };
@@ -25,14 +27,15 @@ interface SystemHealth {
   checks: Record<string, any>;
 }
 
-type Tab = 'overview' | 'users' | 'onboard' | 'extensions' | 'conversations' | 'search' | 'health';
+type Tab = 'overview' | 'users' | 'onboard' | 'employees' | 'conversations' | 'feedback' | 'search' | 'health';
 
 const TAB_LIST: { key: Tab; label: string; icon: React.ReactNode }[] = [
   { key: 'overview', label: 'Overview', icon: <Activity size={15} /> },
   { key: 'users', label: 'Users', icon: <Users size={15} /> },
   { key: 'onboard', label: 'Onboard', icon: <UserPlus size={15} /> },
-  { key: 'extensions', label: 'Extensions', icon: <PhoneCall size={15} /> },
+  { key: 'employees', label: 'Employee IDs', icon: <IdCard size={15} /> },
   { key: 'conversations', label: 'Conversations', icon: <MessageSquare size={15} /> },
+  { key: 'feedback', label: 'Feedback', icon: <Heart size={15} /> },
   { key: 'search', label: 'Search', icon: <Search size={15} /> },
   { key: 'health', label: 'Health', icon: <Server size={15} /> },
 ];
@@ -45,8 +48,6 @@ export default function AdminDashboard() {
   const [conversations, setConversations] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
-  const [ucmExtensions, setUcmExtensions] = useState<any[]>([]);
-  const [allUsers, setAllUsers] = useState<any[]>([]);
   const [analytics, setAnalytics] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [hoverRefresh, setHoverRefresh] = useState(false);
@@ -84,37 +85,9 @@ export default function AdminDashboard() {
     catch (err) { console.error('Search failed:', err); }
   };
 
-  const [extensionsLoading, setExtensionsLoading] = useState(false);
-  const [extensionsError, setExtensionsError] = useState('');
-
-  const loadExtensions = async () => {
-    setExtensionsLoading(true);
-    setExtensionsError('');
-    try {
-      // Load independently so one failure doesn't block the other
-      const [extRes, usersRes] = await Promise.allSettled([
-        api.get('/admin/ucm/extensions'),
-        api.get('/admin/users'),
-      ]);
-      if (extRes.status === 'fulfilled') {
-        setUcmExtensions(extRes.value.data.extensions || []);
-      } else {
-        setExtensionsError('Failed to load UCM extensions: ' + (extRes.reason?.message || 'Unknown error'));
-      }
-      if (usersRes.status === 'fulfilled') {
-        setAllUsers(usersRes.value.data.users || []);
-      }
-    } catch (err: any) {
-      setExtensionsError('Failed to load extensions: ' + (err.message || 'Unknown error'));
-      console.error('Failed to load extensions:', err);
-    }
-    setExtensionsLoading(false);
-  };
-
   useEffect(() => {
     if (activeTab === 'users') loadUsers();
     if (activeTab === 'conversations') loadConversations();
-    if (activeTab === 'extensions') loadExtensions();
   }, [activeTab]);
 
   if (isLoading) {
@@ -204,7 +177,8 @@ export default function AdminDashboard() {
         {activeTab === 'overview' && stats && <OverviewTab stats={stats} analytics={analytics} />}
         {activeTab === 'users' && <UsersTab users={users} onRefresh={loadUsers} />}
         {activeTab === 'onboard' && <OnboardTab />}
-        {activeTab === 'extensions' && <ExtensionsTab extensions={ucmExtensions} users={allUsers} onRefresh={loadExtensions} loading={extensionsLoading} error={extensionsError} />}
+        {activeTab === 'employees' && <EmployeeIdsTab />}
+        {activeTab === 'feedback' && <FeedbackTab />}
         {activeTab === 'conversations' && <ConversationsTab conversations={conversations} />}
         {activeTab === 'search' && <SearchTab query={searchQuery} onQueryChange={setSearchQuery} onSearch={handleSearch} results={searchResults} />}
         {activeTab === 'health' && health && <HealthTab health={health} />}
@@ -544,10 +518,18 @@ function UsersTab({ users, onRefresh }: { users: any[]; onRefresh: () => void })
   };
 
   const handleResetPassword = async (userId: string) => {
-    if (!confirm('Generate a temporary password for this user? Their current password will be replaced.')) return;
+    // The admin types the temporary password themselves (easy to read out over
+    // the phone). The user is then FORCED to set their own at next login.
+    const chosen = prompt(
+      'Type the temporary password for this user (min 6 characters).\n' +
+      'Their current password will be replaced, and they must set their own password at next login.',
+    );
+    if (chosen === null) return; // cancelled
+    const newPassword = chosen.trim();
+    if (newPassword.length < 6) { alert('Temporary password must be at least 6 characters.'); return; }
     setActionLoading(true);
     try {
-      const { data } = await api.put(`/admin/users/${userId}/reset-password`);
+      const { data } = await api.put(`/admin/users/${userId}/reset-password`, { newPassword });
       setTempPassword(data.tempPassword);
     } catch (err: any) { alert(err.response?.data?.error || 'Failed'); }
     setActionLoading(false);
@@ -597,7 +579,7 @@ function UsersTab({ users, onRefresh }: { users: any[]; onRefresh: () => void })
                   <th style={thStyle}>User</th>
                   <th style={thStyle}>Role</th>
                   <th style={thStyle}>Department</th>
-                  <th style={thStyle}>SIP Ext.</th>
+                  <th style={thStyle}>Employee ID</th>
                   <th style={thStyle}>Mail</th>
                   <th style={thStyle}>Messages</th>
                   <th style={thStyle}>Status</th>
@@ -631,7 +613,7 @@ function UsersTab({ users, onRefresh }: { users: any[]; onRefresh: () => void })
                       </span>
                     </td>
                     <td style={tdStyle}>{user.department || <span style={{ color: '#C0C1D4' }}>—</span>}</td>
-                    <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 12 }}>{user.sip_extension || <span style={{ color: '#C0C1D4' }}>—</span>}</td>
+                    <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 12 }}>{user.employee_id || <span style={{ color: '#C0C1D4' }}>—</span>}</td>
                     <td style={tdStyle}><MailStatusBadge status={user.mail_status} /></td>
                     <td style={{ ...tdStyle, fontWeight: 600 }}>{user.message_count ?? 0}</td>
                     <td style={tdStyle}>
@@ -667,7 +649,7 @@ function UsersTab({ users, onRefresh }: { users: any[]; onRefresh: () => void })
             <div style={{ display: 'flex', gap: 6, justifyContent: 'center', flexWrap: 'wrap' }}>
               <span style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 12, background: selectedUser.role === 'admin' ? '#F0F0FA' : '#F5F5F5', color: selectedUser.role === 'admin' ? '#6264A7' : '#6E6F8A' }}>{selectedUser.role}</span>
               {selectedUser.is_active === false && <span style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 12, background: '#FEF2F2', color: '#DC2626' }}>Disabled</span>}
-              {selectedUser.sip_extension && <span style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 12, background: '#F0FDF4', color: '#16A34A', fontFamily: 'monospace' }}>Ext. {selectedUser.sip_extension}</span>}
+              {selectedUser.employee_id && <span style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 12, background: '#F0FDF4', color: '#16A34A', fontFamily: 'monospace' }}>ID {selectedUser.employee_id}</span>}
             </div>
           </div>
 
@@ -754,7 +736,7 @@ function UsersTab({ users, onRefresh }: { users: any[]; onRefresh: () => void })
                 <div style={{ padding: '10px 12px', background: '#F0FDF4', borderRadius: 8, border: '1px solid #BBF7D0' }}>
                   <p style={{ fontSize: 11, color: '#16A34A', margin: '0 0 4px 0', fontWeight: 600 }}>Temporary Password:</p>
                   <p style={{ fontSize: 15, fontFamily: 'monospace', fontWeight: 700, color: '#1A1A2E', margin: 0, letterSpacing: '1px' }}>{tempPassword}</p>
-                  <p style={{ fontSize: 10, color: '#8B8CA7', margin: '4px 0 0 0' }}>Share this with the user. They should change it after login.</p>
+                  <p style={{ fontSize: 10, color: '#8B8CA7', margin: '4px 0 0 0' }}>Share this with the user. They will be required to set their own password at next login.</p>
                 </div>
               )}
             </div>
@@ -1245,288 +1227,6 @@ function SearchTab({ query: searchQuery, onQueryChange, onSearch, results }: { q
 }
 
 /* ======================== EXTENSIONS TAB ======================== */
-function ExtensionsTab({ extensions, users, onRefresh, loading, error }: { extensions: any[]; users: any[]; onRefresh: () => void; loading: boolean; error: string }) {
-  const [assigning, setAssigning] = useState<string | null>(null);
-  const [selectedUser, setSelectedUser] = useState<string>('');
-  const [actionLoading, setActionLoading] = useState(false);
-  const [filterText, setFilterText] = useState('');
-  const [showOnlyUnassigned, setShowOnlyUnassigned] = useState(false);
-  const [hoverAssignBtn, setHoverAssignBtn] = useState('');
-  const [filterFocused, setFilterFocused] = useState(false);
-
-  const unassignedUsers = users.filter((u: any) => !u.sip_extension);
-
-  const filtered = extensions.filter((ext: any) => {
-    const matchesText = !filterText ||
-      ext.extension.includes(filterText) ||
-      (ext.fullname || '').toLowerCase().includes(filterText.toLowerCase()) ||
-      (ext.assignedTo?.username || '').toLowerCase().includes(filterText.toLowerCase()) ||
-      (ext.assignedTo?.displayName || '').toLowerCase().includes(filterText.toLowerCase());
-    const matchesFilter = !showOnlyUnassigned || !ext.assignedTo;
-    return matchesText && matchesFilter;
-  });
-
-  const assignedCount = extensions.filter((e: any) => e.assignedTo).length;
-  const totalCount = extensions.length;
-
-  const handleAssign = async (extension: string) => {
-    if (!selectedUser) return;
-    setActionLoading(true);
-    try {
-      await api.put(`/admin/users/${selectedUser}/extension`, { extension });
-      setAssigning(null);
-      setSelectedUser('');
-      onRefresh();
-    } catch (err: any) {
-      alert(err.response?.data?.error || 'Failed to assign extension');
-    }
-    setActionLoading(false);
-  };
-
-  const handleUnassign = async (userId: string) => {
-    if (!confirm('Unassign this extension? The user will lose calling capability.')) return;
-    setActionLoading(true);
-    try {
-      await api.delete(`/admin/users/${userId}/extension`);
-      onRefresh();
-    } catch (err: any) {
-      alert(err.response?.data?.error || 'Failed to unassign');
-    }
-    setActionLoading(false);
-  };
-
-  const thStyle: React.CSSProperties = { padding: '12px 16px', fontSize: 12, fontWeight: 600, color: '#6E6F8A', textAlign: 'left', textTransform: 'uppercase', letterSpacing: '0.5px' };
-  const tdStyle: React.CSSProperties = { padding: '14px 16px', fontSize: 13, color: '#3D3D56', borderTop: '1px solid #F0F0F5' };
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      {/* Stats Bar */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
-        <div style={{ background: '#fff', borderRadius: 12, padding: '16px 20px', border: '1px solid #E8E8F0' }}>
-          <p style={{ fontSize: 11, color: '#8B8CA7', margin: '0 0 4px 0', fontWeight: 500 }}>Total UCM Extensions</p>
-          <p style={{ fontSize: 24, fontWeight: 700, color: '#1A1A2E', margin: 0 }}>{totalCount}</p>
-        </div>
-        <div style={{ background: '#fff', borderRadius: 12, padding: '16px 20px', border: '1px solid #E8E8F0' }}>
-          <p style={{ fontSize: 11, color: '#8B8CA7', margin: '0 0 4px 0', fontWeight: 500 }}>Assigned to BAL Connect</p>
-          <p style={{ fontSize: 24, fontWeight: 700, color: '#6264A7', margin: 0 }}>{assignedCount}</p>
-        </div>
-        <div style={{ background: '#fff', borderRadius: 12, padding: '16px 20px', border: '1px solid #E8E8F0' }}>
-          <p style={{ fontSize: 11, color: '#8B8CA7', margin: '0 0 4px 0', fontWeight: 500 }}>Available</p>
-          <p style={{ fontSize: 24, fontWeight: 700, color: '#16A34A', margin: 0 }}>{totalCount - assignedCount}</p>
-        </div>
-        <div style={{ background: '#fff', borderRadius: 12, padding: '16px 20px', border: '1px solid #E8E8F0' }}>
-          <p style={{ fontSize: 11, color: '#8B8CA7', margin: '0 0 4px 0', fontWeight: 500 }}>Users Without Extension</p>
-          <p style={{ fontSize: 24, fontWeight: 700, color: '#D97706', margin: 0 }}>{unassignedUsers.length}</p>
-        </div>
-      </div>
-
-      {/* Filter Bar */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <div style={{ position: 'relative', flex: 1, minWidth: 200 }}>
-          <Search size={16} style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: '#A0A1BC' }} />
-          <input
-            type="text"
-            value={filterText}
-            onChange={(e) => setFilterText(e.target.value)}
-            onFocus={() => setFilterFocused(true)}
-            onBlur={() => setFilterFocused(false)}
-            placeholder="Filter by extension, name, or user..."
-            style={{
-              width: '100%', paddingLeft: 42, paddingRight: 16, paddingTop: 10, paddingBottom: 10,
-              border: filterFocused ? '2px solid #6264A7' : '2px solid #E8E8F0',
-              borderRadius: 10, fontSize: 13, color: '#1A1A2E', background: '#fff',
-              outline: 'none', fontFamily: 'inherit', boxSizing: 'border-box',
-              transition: 'all 0.2s',
-            }}
-          />
-        </div>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#6E6F8A', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-          <input
-            type="checkbox"
-            checked={showOnlyUnassigned}
-            onChange={(e) => setShowOnlyUnassigned(e.target.checked)}
-            style={{ accentColor: '#6264A7' }}
-          />
-          Unassigned only
-        </label>
-        <button
-          onClick={onRefresh}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 6, padding: '10px 16px',
-            background: '#fff', border: '1px solid #E8E8F0', borderRadius: 10,
-            fontSize: 13, fontWeight: 500, color: '#6264A7', cursor: 'pointer',
-            fontFamily: 'inherit',
-          }}
-        >
-          <RefreshCw size={14} />
-          Refresh
-        </button>
-      </div>
-
-      {/* Extensions Table */}
-      <div style={{ background: '#fff', borderRadius: 14, border: '1px solid #E8E8F0', boxShadow: '0 1px 3px rgba(0,0,0,0.04)', overflow: 'hidden' }}>
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 750 }}>
-            <thead>
-              <tr style={{ background: '#F8F9FC' }}>
-                <th style={thStyle}>Extension</th>
-                <th style={thStyle}>UCM Name</th>
-                <th style={thStyle}>UCM Status</th>
-                <th style={thStyle}>Assigned To</th>
-                <th style={thStyle}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((ext: any) => (
-                <tr key={ext.extension} onMouseEnter={(e) => { e.currentTarget.style.background = '#FAFAFF'; }} onMouseLeave={(e) => { e.currentTarget.style.background = '#fff'; }}>
-                  <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 14, fontWeight: 700, color: '#6264A7' }}>
-                    {ext.extension}
-                  </td>
-                  <td style={tdStyle}>{ext.fullname || <span style={{ color: '#C0C1D4' }}>—</span>}</td>
-                  <td style={tdStyle}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <div style={{
-                        width: 8, height: 8, borderRadius: '50%',
-                        background: ext.status === 'Idle' ? '#16A34A' : ext.status === 'InUse' || ext.status === 'Busy' ? '#D97706' : '#C0C1D4',
-                      }} />
-                      <span style={{
-                        fontSize: 12, fontWeight: 500,
-                        color: ext.status === 'Idle' ? '#16A34A' : ext.status === 'InUse' || ext.status === 'Busy' ? '#D97706' : '#8B8CA7',
-                      }}>
-                        {ext.status}
-                      </span>
-                    </div>
-                  </td>
-                  <td style={tdStyle}>
-                    {ext.assignedTo ? (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <div style={{
-                          width: 28, height: 28, borderRadius: '50%', background: '#6264A7', color: '#fff',
-                          display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 600, flexShrink: 0,
-                        }}>
-                          {(ext.assignedTo.displayName || ext.assignedTo.username)?.[0]?.toUpperCase() || '?'}
-                        </div>
-                        <div>
-                          <p style={{ fontSize: 13, fontWeight: 600, color: '#1A1A2E', margin: 0 }}>
-                            {ext.assignedTo.displayName || ext.assignedTo.username}
-                          </p>
-                          <p style={{ fontSize: 11, color: '#A0A1BC', margin: 0 }}>@{ext.assignedTo.username}</p>
-                        </div>
-                      </div>
-                    ) : (
-                      <span style={{ fontSize: 12, color: '#C0C1D4', fontStyle: 'italic' }}>Not assigned</span>
-                    )}
-                  </td>
-                  <td style={tdStyle}>
-                    {ext.assignedTo ? (
-                      <button
-                        onClick={() => handleUnassign(ext.assignedTo.userId)}
-                        disabled={actionLoading}
-                        style={{
-                          display: 'flex', alignItems: 'center', gap: 5,
-                          padding: '6px 12px', background: '#FEF2F2', border: '1px solid #FECACA',
-                          borderRadius: 8, fontSize: 12, fontWeight: 500, color: '#DC2626',
-                          cursor: actionLoading ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-                          opacity: actionLoading ? 0.5 : 1,
-                        }}
-                      >
-                        <Unlink size={12} />
-                        Unassign
-                      </button>
-                    ) : assigning === ext.extension ? (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <select
-                          value={selectedUser}
-                          onChange={(e) => setSelectedUser(e.target.value)}
-                          style={{
-                            padding: '6px 10px', borderRadius: 8, border: '1px solid #E8E8F0',
-                            fontSize: 12, color: '#3D3D56', background: '#fff', fontFamily: 'inherit',
-                            minWidth: 140, outline: 'none',
-                          }}
-                        >
-                          <option value="">Select user...</option>
-                          {unassignedUsers.map((u: any) => (
-                            <option key={u.id} value={u.id}>{u.display_name || u.username} (@{u.username})</option>
-                          ))}
-                        </select>
-                        <button
-                          onClick={() => handleAssign(ext.extension)}
-                          disabled={!selectedUser || actionLoading}
-                          onMouseEnter={() => setHoverAssignBtn(ext.extension)}
-                          onMouseLeave={() => setHoverAssignBtn('')}
-                          style={{
-                            padding: '6px 14px', background: !selectedUser || actionLoading ? '#E8E8F0' : hoverAssignBtn === ext.extension ? '#4F51A0' : '#6264A7',
-                            color: '#fff', border: 'none', borderRadius: 8, fontSize: 12, fontWeight: 600,
-                            cursor: !selectedUser || actionLoading ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-                            display: 'flex', alignItems: 'center', gap: 4,
-                          }}
-                        >
-                          {actionLoading ? <Loader size={12} /> : <Link size={12} />}
-                          Assign
-                        </button>
-                        <button
-                          onClick={() => { setAssigning(null); setSelectedUser(''); }}
-                          style={{
-                            padding: '6px 10px', background: '#F5F5F5', border: 'none', borderRadius: 8,
-                            fontSize: 12, color: '#6E6F8A', cursor: 'pointer', fontFamily: 'inherit',
-                          }}
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    ) : (
-                      <button
-                        onClick={() => setAssigning(ext.extension)}
-                        onMouseEnter={() => setHoverAssignBtn(ext.extension)}
-                        onMouseLeave={() => setHoverAssignBtn('')}
-                        style={{
-                          display: 'flex', alignItems: 'center', gap: 5,
-                          padding: '6px 12px',
-                          background: hoverAssignBtn === ext.extension ? '#F0F0FA' : '#fff',
-                          border: '1px solid #E8E8F0', borderRadius: 8, fontSize: 12, fontWeight: 500,
-                          color: '#6264A7', cursor: 'pointer', fontFamily: 'inherit',
-                          transition: 'all 0.15s',
-                        }}
-                      >
-                        <Link size={12} />
-                        Assign User
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        {filtered.length === 0 && (
-          <div style={{ textAlign: 'center', padding: '40px 0', color: '#8B8CA7', fontSize: 13 }}>
-            {loading ? (
-              <div>
-                <div style={{ width: 28, height: 28, border: '3px solid #E8E8F0', borderTopColor: '#6264A7', borderRadius: '50%', animation: 'spin 0.8s linear infinite', margin: '0 auto 12px' }} />
-                Fetching {extensions.length > 0 ? 'updated' : ''} extensions from UCM6304...
-              </div>
-            ) : error ? (
-              <div style={{ color: '#DC2626' }}>
-                <XCircle size={24} style={{ margin: '0 auto 8px', display: 'block' }} />
-                {error}
-                <br />
-                <button onClick={onRefresh} style={{ marginTop: 12, padding: '8px 20px', background: '#6264A7', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontFamily: 'inherit' }}>
-                  Retry
-                </button>
-              </div>
-            ) : extensions.length === 0 ? (
-              'No extensions found on UCM6304'
-            ) : (
-              'No extensions match your filter'
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ======================== HEALTH TAB ======================== */
 function HealthTab({ health }: { health: SystemHealth }) {
   const checks = health.checks || {};
 

@@ -21,6 +21,9 @@ interface AuthState {
   logout: () => Promise<void>;
   checkAuth: () => Promise<void>;
   updateUser: (updates: Partial<User>) => void;
+  /** Forced first-login flow (and voluntary changes): verifies the current
+   *  (temporary) password server-side, sets the new one, clears the gate. */
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
   clearError: () => void;
 }
 
@@ -110,6 +113,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const current = get().user;
     if (current) {
       set({ user: { ...current, ...updates } });
+    }
+  },
+
+  changePassword: async (currentPassword, newPassword) => {
+    await api.post('/auth/change-password', { currentPassword, newPassword });
+    const current = get().user;
+    if (current) {
+      set({ user: { ...current, must_change_password: false } });
     }
   },
 

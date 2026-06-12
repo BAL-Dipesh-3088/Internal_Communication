@@ -9,6 +9,7 @@ import { useUIStore } from '@/stores/uiStore';
 import { getSocket } from '@/services/socket';
 import { useChatStore } from '@/stores/chatStore';
 import { useCallStore } from '@/stores/callStore';
+import { useMailStore } from '@/stores/mailStore';
 import { useWindowSize, BREAKPOINTS } from '@/hooks/useWindowSize';
 import IncomingCallModal from '@/components/calls/IncomingCallModal';
 import IncomingGroupCallModal from '@/components/calls/IncomingGroupCallModal';
@@ -47,6 +48,14 @@ export default function AppLayout() {
   // the Outlet to render regardless of which tab was last active — this is what
   // makes the in-app "Join meeting" button (e.g. from the calendar) actually work.
   const isMeetingRoute = /^\/meeting\/.+/.test(location.pathname);
+
+  // Global inbox watcher — unread badge on the Email icon + new-mail sound,
+  // active wherever the user is in the app (not just the Email tab).
+  useEffect(() => {
+    const { startPolling, stopPolling } = useMailStore.getState();
+    startPolling();
+    return () => stopPolling();
+  }, []);
 
   // On mobile, auto-close sidebar when a conversation is selected
   useEffect(() => {

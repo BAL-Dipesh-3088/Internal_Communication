@@ -35,7 +35,16 @@ api.interceptors.response.use(
   async (error: AxiosError) => {
     const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
 
-    if (error.response?.status === 401 && !originalRequest._retry) {
+    // Credential endpoints return 401 for WRONG CREDENTIALS, not an expired
+    // session. They must never trigger the refresh-and-reload flow below —
+    // that full-page redirect was eating the "wrong password" error message
+    // before the user could see it.
+    const url = originalRequest?.url || '';
+    const isCredentialEndpoint =
+      url.includes('/auth/login') || url.includes('/auth/register') ||
+      url.includes('/auth/refresh') || url.includes('/auth/change-password');
+
+    if (error.response?.status === 401 && !originalRequest._retry && !isCredentialEndpoint) {
       if (isRefreshing) {
         return new Promise((resolve, reject) => {
           failedQueue.push({

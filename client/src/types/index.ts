@@ -14,6 +14,9 @@ export interface User {
   status_message?: string | null;
   last_seen: string;
   created_at: string;
+  /** TRUE while the password is a temporary one (onboarding / admin reset) —
+   *  the app is blocked behind the set-new-password gate until cleared. */
+  must_change_password?: boolean;
 }
 
 export interface AuthTokens {

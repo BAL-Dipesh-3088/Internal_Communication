@@ -7,6 +7,7 @@ import https from 'https';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { ucmService } from '../../services/ucm.service';
+import { lookupEmployee, searchEmployees, directoryHealth } from '../../services/employee-directory.service';
 import * as stalwart from '../../services/stalwart.service';
 import { encryptSecret, generateMailPassword } from '../../utils/crypto';
 
@@ -87,7 +88,7 @@ router.get('/users', async (req: AuthRequest, res: Response) => {
 
     let sql = `
       SELECT id, username, email, display_name, avatar_url, role, department, designation,
-             sip_extension, sip_password, status, status_message, is_active, last_seen, created_at,
+             employee_id, sip_extension, sip_password, status, status_message, is_active, last_seen, created_at,
              mail_status, mail_assigned_at, mail_assigned_by, mail_last_test_at, mail_last_test_ok,
              (SELECT COUNT(*) FROM messages WHERE sender_id = users.id AND deleted_at IS NULL) as message_count,
              (SELECT COUNT(*) FROM files WHERE uploaded_by = users.id) as file_count
@@ -97,7 +98,7 @@ router.get('/users', async (req: AuthRequest, res: Response) => {
     let idx = 1;
 
     if (search) {
-      sql += ` AND (username ILIKE $${idx} OR display_name ILIKE $${idx} OR email ILIKE $${idx})`;
+      sql += ` AND (username ILIKE $${idx} OR display_name ILIKE $${idx} OR email ILIKE $${idx} OR employee_id ILIKE $${idx})`;
       params.push(`%${search}%`);
       idx++;
     }
@@ -175,19 +176,27 @@ router.put('/users/:id/toggle-active', async (req: AuthRequest, res: Response) =
   }
 });
 
-// PUT /api/admin/users/:id/reset-password — Generate temp password
+// PUT /api/admin/users/:id/reset-password — Set a TEMPORARY password
+// Body: { newPassword?: string } — the admin types the temp password themselves
+// (easy to read out to the employee). Falls back to a random one when omitted.
+// Either way the account is flagged must_change_password, so the user is
+// forced to pick their own password at the next login.
 router.put('/users/:id/reset-password', async (req: AuthRequest, res: Response) => {
   try {
-    const tempPassword = crypto.randomBytes(4).toString('hex'); // 8-char hex
+    const supplied = String(req.body?.newPassword || '').trim();
+    if (supplied && supplied.length < 6) {
+      return res.status(400).json({ error: 'Temporary password must be at least 6 characters' });
+    }
+    const tempPassword = supplied || crypto.randomBytes(4).toString('hex'); // 8-char hex fallback
     const hash = await bcrypt.hash(tempPassword, 12);
     const result = await query(
-      `UPDATE users SET password_hash = $1, updated_at = NOW()
+      `UPDATE users SET password_hash = $1, must_change_password = TRUE, updated_at = NOW()
        WHERE id = $2 RETURNING id, username, display_name`,
       [hash, req.params.id]
     );
     if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
-    console.log(`[Admin] Password reset for user ${result.rows[0].username}`);
-    res.json({ user: result.rows[0], tempPassword });
+    console.log(`[Admin] Password reset for user ${result.rows[0].username} (must change at next login)`);
+    res.json({ user: result.rows[0], tempPassword, mustChangePassword: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -310,6 +319,8 @@ router.post('/users/onboard', async (req: AuthRequest, res: Response) => {
   const designation = body.designation ? String(body.designation).trim() : null;
   const role = String(body.role || 'employee').trim();
   const loginPassword = String(body.loginPassword || '');
+  // Optional corporate employee ID (validated against the SAP master below)
+  const employeeId = body.employee_id ? String(body.employee_id).trim() : null;
   const mail = body.mail || { mode: 'skip' };
   const mailMode = mail.mode === 'create' || mail.mode === 'assign' ? mail.mode : 'skip';
   const mailExistingPassword = mail.existingPassword ? String(mail.existingPassword) : '';
@@ -342,6 +353,22 @@ router.post('/users/onboard', async (req: AuthRequest, res: Response) => {
     return res.status(500).json({ error: 'DB error: ' + err.message });
   }
 
+  // ---- Employee ID validation (optional field) ----
+  if (employeeId) {
+    try {
+      const emp = await lookupEmployee(employeeId);
+      if (!emp) {
+        return res.status(404).json({ error: 'No active employee with that ID in the corporate directory' });
+      }
+      const dup = await query('SELECT username FROM users WHERE employee_id = $1 LIMIT 1', [employeeId]);
+      if (dup.rows.length > 0) {
+        return res.status(409).json({ error: `Employee ID already mapped to user "${dup.rows[0].username}"` });
+      }
+    } catch (err: any) {
+      return res.status(502).json({ error: 'Employee directory unavailable: ' + err.message });
+    }
+  }
+
   // ---- Begin transaction ----
   const client = await pool.connect();
   let createdUserId: string | null = null;
@@ -354,12 +381,15 @@ router.post('/users/onboard', async (req: AuthRequest, res: Response) => {
     const loginHash = await bcrypt.hash(loginPassword, 12);
 
     // Insert user. mail_status defaults to 'none' from schema.
+    // must_change_password = TRUE: the admin chose this initial password, so the
+    // employee is forced to set their own at first login (enterprise policy).
     const insertUser = await client.query(
       `INSERT INTO users (
-         username, email, password_hash, display_name, department, designation, role
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-       RETURNING id, username, email, display_name, department, designation, role, created_at`,
-      [username, email, loginHash, display_name, department, designation, role],
+         username, email, password_hash, display_name, department, designation, role, employee_id,
+         must_change_password
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE)
+       RETURNING id, username, email, display_name, department, designation, role, employee_id, created_at`,
+      [username, email, loginHash, display_name, department, designation, role, employeeId],
     );
     const newUser = insertUser.rows[0];
     createdUserId = newUser.id;
@@ -972,6 +1002,130 @@ router.get('/messages/search', async (req: AuthRequest, res: Response) => {
 
     const result = await query(sql, params);
     res.json({ messages: result.rows });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================
+// FEEDBACK (submitted from the login page)
+// ============================================
+
+// GET /api/admin/feedback — newest first
+router.get('/feedback', async (_req: AuthRequest, res: Response) => {
+  try {
+    const result = await query(
+      `SELECT id, mood, category, message, name, created_at
+         FROM feedback ORDER BY created_at DESC LIMIT 500`,
+    );
+    res.json({ feedback: result.rows });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/admin/feedback/:id — remove a handled feedback card
+router.delete('/feedback/:id', async (req: AuthRequest, res: Response) => {
+  try {
+    const result = await query('DELETE FROM feedback WHERE id = $1 RETURNING id', [String(req.params.id)]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Feedback not found' });
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================
+// EMPLOYEE DIRECTORY (corporate SAP master — read-only)
+// ============================================
+
+// GET /api/admin/employees/lookup/:empId — exact lookup for onboarding auto-fill
+router.get('/employees/lookup/:empId', async (req: AuthRequest, res: Response) => {
+  try {
+    const emp = await lookupEmployee(String(req.params.empId));
+    if (!emp) return res.status(404).json({ error: 'No active employee with that ID' });
+
+    // Also report whether this employee ID is already mapped to an ICP account
+    const mapped = await query(
+      'SELECT id, username, display_name FROM users WHERE employee_id = $1 LIMIT 1',
+      [emp.empId],
+    );
+    res.json({ employee: emp, mappedTo: mapped.rows[0] || null });
+  } catch (err: any) {
+    res.status(502).json({ error: 'Employee directory unavailable: ' + err.message });
+  }
+});
+
+// GET /api/admin/employees/search?q= — search the directory (mapping UI)
+router.get('/employees/search', async (req: AuthRequest, res: Response) => {
+  try {
+    const employees = await searchEmployees(String(req.query.q || ''));
+    // Annotate each result with its existing ICP mapping (if any)
+    const ids = employees.map((e) => e.empId);
+    let mappings: Record<string, { userId: string; username: string; displayName: string }> = {};
+    if (ids.length > 0) {
+      const mapped = await query(
+        'SELECT id, username, display_name, employee_id FROM users WHERE employee_id = ANY($1)',
+        [ids],
+      );
+      for (const row of mapped.rows) {
+        mappings[row.employee_id] = { userId: row.id, username: row.username, displayName: row.display_name };
+      }
+    }
+    res.json({ employees: employees.map((e) => ({ ...e, mappedTo: mappings[e.empId] || null })) });
+  } catch (err: any) {
+    res.status(502).json({ error: 'Employee directory unavailable: ' + err.message });
+  }
+});
+
+// GET /api/admin/employees/health — directory connectivity probe
+router.get('/employees/health', async (_req: AuthRequest, res: Response) => {
+  res.json(await directoryHealth());
+});
+
+// PUT /api/admin/users/:id/employee-id — map (or clear) an employee ID on an account
+// Body: { employeeId: string | null }
+router.put('/users/:id/employee-id', async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = String(req.params.id);
+    const raw = req.body?.employeeId;
+    const employeeId = raw === null || raw === undefined || String(raw).trim() === ''
+      ? null
+      : String(raw).trim();
+
+    if (employeeId) {
+      // 1. Must exist and be Active in the corporate master
+      const emp = await lookupEmployee(employeeId);
+      if (!emp) return res.status(404).json({ error: 'No active employee with that ID in the corporate directory' });
+
+      // 2. Must not already be mapped to a different account
+      const dup = await query(
+        'SELECT id, username FROM users WHERE employee_id = $1 AND id != $2 LIMIT 1',
+        [employeeId, userId],
+      );
+      if (dup.rows.length > 0) {
+        return res.status(409).json({ error: `Employee ID already mapped to user "${dup.rows[0].username}"` });
+      }
+    }
+
+    const result = await query(
+      'UPDATE users SET employee_id = $1 WHERE id = $2 RETURNING id, username, display_name, employee_id',
+      [employeeId, userId],
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+
+    await query(
+      `INSERT INTO admin_audit_logs (admin_user_id, target_user_id, action, details, ip_address)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [
+        req.user!.userId,
+        userId,
+        employeeId ? 'employee_id.assigned' : 'employee_id.cleared',
+        { employeeId },
+        req.ip || null,
+      ],
+    );
+    res.json({ user: result.rows[0] });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

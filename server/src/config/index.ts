@@ -36,6 +36,17 @@ export const config = {
     password: process.env.REDIS_PASSWORD || '',
   },
 
+  // External corporate employee DB (READ-ONLY MySQL — SAP master data).
+  // Empty host disables the integration gracefully (lookups return errors,
+  // login by username keeps working).
+  extDb: {
+    host: process.env.EXT_DB_HOST || '',
+    port: parseInt(process.env.EXT_DB_PORT || '3306', 10),
+    user: process.env.EXT_DB_USER || '',
+    password: process.env.EXT_DB_PASS || '',
+    database: process.env.EXT_DB_NAME || '',
+  },
+
   jwt: {
     secret: process.env.JWT_SECRET || 'dev_secret',
     refreshSecret: process.env.JWT_REFRESH_SECRET || 'dev_refresh_secret',

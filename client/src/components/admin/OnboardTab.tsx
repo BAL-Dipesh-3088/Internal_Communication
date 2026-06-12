@@ -21,12 +21,22 @@ type Role = 'admin' | 'manager' | 'employee';
 type MailMode = 'create' | 'assign' | 'skip';
 
 interface PersonalInfo {
+  employee_id: string;
   display_name: string;
   username: string;
   email: string;
   department: string;
   designation: string;
   role: Role;
+}
+
+/** Shape returned by GET /admin/employees/lookup/:empId (corporate SAP master). */
+export interface DirectoryEmployee {
+  empId: string;
+  name: string;
+  designation: string | null;
+  department: string | null;
+  email: string | null;
 }
 
 interface MailConfig {
@@ -41,6 +51,7 @@ interface AvailabilityState {
 }
 
 const initialPersonal: PersonalInfo = {
+  employee_id: '',
   display_name: '',
   username: '',
   email: '',
@@ -170,6 +181,23 @@ export default function OnboardTab() {
     });
   }
 
+  // ---- Auto-fill from the corporate SAP directory (employee ID fetch) ----
+  // Single functional update so the slug suggestions and fetched fields can't
+  // race each other. The corporate email wins when present; otherwise we keep
+  // the usual slug-based suggestion.
+  function applyEmployeeFetch(emp: DirectoryEmployee) {
+    setPersonal((p) => {
+      const next = { ...p, employee_id: emp.empId, display_name: emp.name };
+      if (emp.department) next.department = emp.department;
+      if (emp.designation) next.designation = emp.designation;
+      const slug = nameToSlug(emp.name);
+      if (!usernameTouched) next.username = slug;
+      if (emp.email) next.email = emp.email;
+      else if (!emailTouched && slug) next.email = `${slug}@balasorealloys.in`;
+      return next;
+    });
+  }
+
   // ---- Live availability check (debounced) ----
   useEffect(() => {
     if (!personal.username) {
@@ -237,6 +265,7 @@ export default function OnboardTab() {
     setSubmitting(true);
     try {
       const { data } = await api.post('/admin/users/onboard', {
+        employee_id: personal.employee_id.trim() || undefined,
         display_name: personal.display_name.trim(),
         username: personal.username.trim().toLowerCase(),
         email: personal.email.trim().toLowerCase(),
@@ -300,6 +329,7 @@ export default function OnboardTab() {
             personal={personal}
             onChange={(p) => setPersonal(p)}
             onDisplayNameChange={onDisplayNameChange}
+            onEmployeeFetch={applyEmployeeFetch}
             usernameTouched={usernameTouched}
             setUsernameTouched={setUsernameTouched}
             emailTouched={emailTouched}
@@ -462,25 +492,88 @@ function ProgressBar({ step }: { step: 1 | 2 | 3 | 4 }) {
 // STEP 1 — Personal Info
 // =========================================================================
 function Step1Personal({
-  personal, onChange, onDisplayNameChange,
+  personal, onChange, onDisplayNameChange, onEmployeeFetch,
   usernameTouched, setUsernameTouched, emailTouched, setEmailTouched,
   availability,
 }: {
   personal: PersonalInfo;
   onChange: (p: PersonalInfo) => void;
   onDisplayNameChange: (val: string) => void;
+  onEmployeeFetch: (emp: DirectoryEmployee) => void;
   usernameTouched: boolean; setUsernameTouched: (b: boolean) => void;
   emailTouched: boolean; setEmailTouched: (b: boolean) => void;
   availability: AvailabilityState;
 }) {
+  // Employee ID fetch — local UI state for the lookup round-trip
+  const [fetchState, setFetchState] = useState<
+    | { kind: 'idle' }
+    | { kind: 'loading' }
+    | { kind: 'ok'; name: string }
+    | { kind: 'error'; message: string }
+  >({ kind: 'idle' });
+
+  async function handleFetch() {
+    const empId = personal.employee_id.trim();
+    if (!empId) { setFetchState({ kind: 'error', message: 'Enter an employee ID first' }); return; }
+    setFetchState({ kind: 'loading' });
+    try {
+      const { data } = await api.get(`/admin/employees/lookup/${encodeURIComponent(empId)}`);
+      if (data.mappedTo) {
+        setFetchState({ kind: 'error', message: `Already mapped to ICP user "${data.mappedTo.username}"` });
+        return;
+      }
+      onEmployeeFetch(data.employee);
+      setFetchState({ kind: 'ok', name: data.employee.name });
+    } catch (err: any) {
+      setFetchState({ kind: 'error', message: err?.response?.data?.error || 'Lookup failed' });
+    }
+  }
+
   return (
     <div>
       <h2 style={{ fontSize: 18, fontWeight: 700, color: C.text, margin: '0 0 6px 0' }}>Personal Information</h2>
       <p style={{ fontSize: 12, color: C.textFaint, margin: '0 0 24px 0' }}>
-        Basic identity details. Username + email auto-fill from the display name — you can edit either.
+        Start with the employee ID — name and details auto-fill from the corporate directory. Or fill manually.
       </p>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <Field label="Employee ID (auto-fills from corporate directory)" full>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              type="text"
+              value={personal.employee_id}
+              onChange={(e) => {
+                onChange({ ...personal, employee_id: e.target.value });
+                if (fetchState.kind !== 'idle') setFetchState({ kind: 'idle' });
+              }}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleFetch(); } }}
+              placeholder="e.g. 100001"
+              style={{ ...inputStyle, flex: 1 }}
+            />
+            <button
+              type="button"
+              onClick={handleFetch}
+              disabled={fetchState.kind === 'loading'}
+              style={{
+                padding: '0 18px', borderRadius: 8, border: 'none',
+                background: fetchState.kind === 'loading' ? '#A0A1D6' : C.primary,
+                color: '#fff', fontSize: 13, fontWeight: 600, cursor: fetchState.kind === 'loading' ? 'wait' : 'pointer',
+                fontFamily: 'inherit', whiteSpace: 'nowrap',
+              }}
+            >
+              {fetchState.kind === 'loading' ? 'Fetching…' : 'Fetch details'}
+            </button>
+          </div>
+          {fetchState.kind === 'ok' && (
+            <div style={{ marginTop: 6, fontSize: 12, color: '#15803D' }}>
+              ✓ Found <strong>{fetchState.name}</strong> — details filled below
+            </div>
+          )}
+          {fetchState.kind === 'error' && (
+            <div style={{ marginTop: 6, fontSize: 12, color: '#DC2626' }}>{fetchState.message}</div>
+          )}
+        </Field>
+
         <Field label="Display Name *" full>
           <input
             type="text"

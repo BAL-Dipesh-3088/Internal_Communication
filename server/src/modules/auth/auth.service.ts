@@ -77,11 +77,15 @@ export class AuthService {
   }
 
   async login(input: LoginInput) {
+    // The identifier field accepts the USERNAME or the corporate EMPLOYEE ID
+    // (users.employee_id, mapped from the SAP master). Employee IDs are short
+    // numeric-ish codes that can never collide with usernames in practice, and
+    // employee_id is UNIQUE, so at most one account matches either way.
     const result = await query(
       `SELECT id, username, email, password_hash, display_name, role, sip_extension, sip_password,
-              department, designation, avatar_url, status, is_active
-       FROM users WHERE username = $1`,
-      [input.username]
+              department, designation, avatar_url, status, is_active, must_change_password
+       FROM users WHERE username = $1 OR employee_id = $2 LIMIT 1`,
+      [input.username, input.username.trim()]
     );
 
     if (result.rows.length === 0) {
@@ -126,6 +130,9 @@ export class AuthService {
         status: 'online',
         last_seen: new Date().toISOString(),
         created_at: user.created_at || new Date().toISOString(),
+        // TRUE when the password is a temporary one (onboarding / admin reset)
+        // — the client blocks the app behind the set-new-password gate.
+        must_change_password: user.must_change_password === true,
       },
       tokens: {
         accessToken: generateAccessToken(payload),

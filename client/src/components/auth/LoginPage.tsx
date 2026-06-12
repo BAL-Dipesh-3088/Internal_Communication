@@ -2,10 +2,11 @@ import { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Eye, EyeOff, Loader2, ArrowRight,
-  Shield, Zap, Users, Lock,
+  Shield, Zap, Users, Lock, HelpCircle, Heart,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { useWindowSize, BREAKPOINTS } from '@/hooks/useWindowSize';
+import LoginHelpModal, { LoginFeedbackModal } from './LoginHelpModal';
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -14,6 +15,8 @@ export default function LoginPage() {
   const [username, setUsername]         = useState('');
   const [password, setPassword]         = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [showHelp, setShowHelp]         = useState(false);
+  const [showFeedback, setShowFeedback] = useState(false);
   const [focusedField, setFocusedField] = useState<string | null>(null);
   const { width } = useWindowSize();
 
@@ -256,7 +259,7 @@ export default function LoginPage() {
                   color: 'rgba(255,255,255,0.60)', marginBottom: 7,
                   letterSpacing: '0.5px', textTransform: 'uppercase',
                 }}>
-                  Username
+                  Username / Employee ID
                 </label>
                 <input
                   type="text"
@@ -264,7 +267,7 @@ export default function LoginPage() {
                   onChange={(e) => { setUsername(e.target.value); clearError(); }}
                   onFocus={() => setFocusedField('username')}
                   onBlur={() => setFocusedField(null)}
-                  placeholder="Enter your username"
+                  placeholder="Enter your username or employee ID"
                   required autoFocus autoComplete="username"
                   style={inputStyle('username')}
                 />
@@ -338,6 +341,39 @@ export default function LoginPage() {
               </button>
             </form>
 
+            {/* Help desk — forgot password / contact admin */}
+            <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+              <button
+                type="button"
+                onClick={() => setShowHelp(true)}
+                style={{
+                  background: 'transparent', border: 'none', cursor: 'pointer',
+                  color: 'rgba(255,255,255,0.55)', fontSize: 12.5, fontFamily: 'inherit',
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  padding: '6px 10px', borderRadius: 8, transition: 'color 0.15s',
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.color = '#fff'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.55)'; }}
+              >
+                <HelpCircle size={13} /> Need help signing in?
+              </button>
+              {/* Feedback is its own entry — it's not a sign-in problem */}
+              <button
+                type="button"
+                onClick={() => setShowFeedback(true)}
+                style={{
+                  background: 'transparent', border: 'none', cursor: 'pointer',
+                  color: 'rgba(255,255,255,0.55)', fontSize: 12.5, fontFamily: 'inherit',
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  padding: '6px 10px', borderRadius: 8, transition: 'color 0.15s',
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.color = '#fff'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.55)'; }}
+              >
+                <Heart size={13} /> Give feedback
+              </button>
+            </div>
+
             {/* Self-service registration is disabled — accounts are provisioned by IT/admin only.
                 If management approves public sign-up later, restore the "OR" divider + Register link
                 block here. The /register route + RegisterPage component still exist for that day. */}
@@ -355,6 +391,12 @@ export default function LoginPage() {
       }}>
         BAL Connect v1.0 — Balasore Alloys Internal Communication
       </div>
+
+      {/* Help desk modal — forgot password / contact admin */}
+      {showHelp && <LoginHelpModal onClose={() => setShowHelp(false)} />}
+
+      {/* Standalone feedback modal */}
+      {showFeedback && <LoginFeedbackModal onClose={() => setShowFeedback(false)} />}
 
       <style>{`
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }

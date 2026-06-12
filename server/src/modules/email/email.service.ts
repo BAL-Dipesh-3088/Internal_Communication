@@ -28,6 +28,52 @@ if (STALWART_HOST) {
 }
 
 /**
+ * System-sender email — for mails that have NO authenticated user behind them
+ * (login-page help desk: forgot-password requests, feedback).
+ *
+ * Stalwart only lets a principal send from its OWN address (the env `admin`
+ * account is a management principal with no mail identity — it gets
+ * "501 not allowed to send from this address"). So instead we authenticate as
+ * the first ADMIN USER that has a working mail account and send as them,
+ * labelled "ICP Help Desk". This reuses the exact same per-user path that
+ * meeting invites already use in production.
+ */
+export async function sendSystemEmail(opts: {
+  to: string | string[];
+  subject: string;
+  html: string;
+  fromName?: string;
+}): Promise<void> {
+  // First active admin with a mail credential acts as the system sender.
+  const admins = await query(
+    `SELECT id FROM users
+      WHERE role = 'admin' AND is_active = true
+        AND (mail_password_encrypted IS NOT NULL OR mail_password IS NOT NULL)
+      ORDER BY created_at ASC`,
+  );
+
+  let lastErr: Error | null = null;
+  for (const row of admins.rows) {
+    const cred = await resolveUserMailCredential(row.id);
+    if (!cred.email || !cred.mailPassword) continue;
+    try {
+      await sendEmail({
+        to: opts.to,
+        subject: opts.subject,
+        html: opts.html,
+        fromEmail: cred.email,
+        fromName: opts.fromName || 'ICP Help Desk',
+        mailPassword: cred.mailPassword,
+      });
+      return;
+    } catch (err: any) {
+      lastErr = err; // try the next admin's mailbox
+    }
+  }
+  throw lastErr || new Error('No admin account with a working mail credential found for system mail');
+}
+
+/**
  * Resolves a user's Stalwart credential, preferring the AES-encrypted column.
  * Falls back to the legacy plaintext `mail_password` column (during migration window).
  *
