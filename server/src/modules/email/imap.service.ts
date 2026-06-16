@@ -178,10 +178,17 @@ export async function fetchEmails(folder: string = 'INBOX', limit: number = 30, 
       lock.release();
     }
 
-    await client.logout();
   } catch (err: any) {
     console.error('[IMAP] Fetch error:', err.message);
     throw err;
+  } finally {
+    // ALWAYS drop the IMAP connection — even on the empty-inbox early return
+    // OR a thrown error (the old code skipped logout on both paths). A leaked
+    // connection accumulates on every 30s poll until Stalwart's IMAP
+    // connection limit is hit, after which the inbox goes blank for everyone
+    // until the app container restarts. close() is forceful and safe to call
+    // unconditionally — it won't throw usefully if already closed.
+    try { client.close(); } catch { /* already closed */ }
   }
 
   // Return newest first

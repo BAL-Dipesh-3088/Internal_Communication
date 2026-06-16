@@ -662,7 +662,21 @@ router.post('/:callId/invite', async (req: AuthRequest, res: Response) => {
     const existing = participants.find((p) => p.userId === inviteeId);
 
     if (existing?.status === 'joined') {
-      return res.status(409).json({ error: 'User is already in the call' });
+      // The DB says 'joined', but a participant who left/closed/logged out is
+      // never flipped back (LiveKit owns real presence, not our JSONB). Reconcile
+      // against the LIVE room: only block the invite if they're ACTUALLY connected.
+      // This fixes "User is already in a call" when they clearly are not.
+      let actuallyInRoom = false;
+      try {
+        const live = await livekit.listParticipants(call.livekit_room_name);
+        actuallyInRoom = !!live?.some((p) => p.identity === inviteeId);
+      } catch {
+        actuallyInRoom = false; // LiveKit unreachable → don't block a legitimate re-invite
+      }
+      if (actuallyInRoom) {
+        return res.status(409).json({ error: 'User is already in the call' });
+      }
+      // Not really in the room → fall through and re-invite (status reset below).
     }
 
     if (!existing) {

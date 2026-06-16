@@ -80,6 +80,24 @@ export default function GroupCallOverlay() {
         videoCaptureDefaults: {
           resolution: { width: 1280, height: 720, frameRate: 30 },
         },
+        // ── Audio cleanup (the echo / background-noise fix) ──
+        // Explicitly turn on the browser's voice DSP. Without this, calls echo
+        // and pick up fans/keyboards/room noise. These are WebRTC mic
+        // constraints honoured by Chrome/Edge/Firefox:
+        //   echoCancellation  — removes the far-end voice the mic re-captures
+        //   noiseSuppression  — strips steady background noise (fans, AC, hum)
+        //   autoGainControl   — normalises volume so close/far talkers match
+        audioCaptureDefaults: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          // Mono — stereo doubles ambient pickup for no voice benefit.
+          channelCount: 1,
+          // Chrome 126+ ML voice isolation: strips far stronger background
+          // noise (keyboards, fans, other people) than plain noiseSuppression.
+          // Cast: not yet in the lib's type defs but honoured by the browser.
+          ...( { voiceIsolation: true } as any ),
+        },
         publishDefaults: {
           // Simulcast publishes 3 quality layers (h180/h360/h720 by default).
           // The SFU picks per subscriber. Slight publisher CPU bump in
@@ -602,17 +620,18 @@ function GroupCallContent() {
         )}
       </div>
 
-      {/* Bottom controls */}
+      {/* Bottom controls — main cluster CENTERED (Teams-style), leave pinned right */}
       <div
         style={{
+          position: 'relative',
           padding: '12px 20px', borderTop: '1px solid #2A2A45',
           background: '#1A1A2E',
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
           flexShrink: 0, gap: 12, flexWrap: 'wrap',
         }}
       >
-        {/* Left cluster: LiveKit's built-in mic/cam/screen-share + raise hand + reactions */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1, minWidth: 0, flexWrap: 'wrap' }}>
+        {/* Centered cluster: LiveKit mic/cam/screen-share + raise hand + reactions */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', justifyContent: 'center' }}>
           <ControlBar
             variation="minimal"
             controls={{
@@ -628,8 +647,10 @@ function GroupCallContent() {
           <ReactionsBar />
         </div>
 
-        {/* Right cluster: leave / end-for-all */}
-        <div style={{ display: 'flex', gap: 8 }}>
+        {/* Leave / end-for-all — absolutely pinned to the right so it doesn't
+            push the centered cluster off-center. On narrow widths it falls
+            back into the normal flow below the cluster. */}
+        <div className="lk-leave-cluster" style={{ display: 'flex', gap: 8, position: 'absolute', right: 20, top: '50%', transform: 'translateY(-50%)' }}>
           {isHost && (
             <button onClick={handleEndForAll} style={endForAllBtnStyle}>
               End for all

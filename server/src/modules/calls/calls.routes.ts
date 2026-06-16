@@ -14,61 +14,63 @@ router.get('/history', authMiddleware, async (req: AuthRequest, res: Response) =
     const { limit = '50', offset = '0' } = req.query;
     const userId = req.user!.userId;
 
-    // Call records are stored as system messages with call metadata
-    // Query messages where the user is a participant in the conversation
+    // Source of truth = the call_history table (every 1:1 AND group call, with
+    // real duration/status). The old approach scraped chat system messages,
+    // which missed group calls and any call that didn't post a message.
     const result = await query(
-      `SELECT m.id, m.sender_id, m.conversation_id, m.content, m.metadata, m.created_at,
-              u.display_name as sender_name,
+      `SELECT ch.id, ch.conversation_id, ch.call_type, ch.is_group_call, ch.status,
+              ch.duration_seconds, ch.caller_id, ch.host_user_id, ch.started_at,
+              conv.name AS conv_name, conv.type AS conv_type,
+              (SELECT ru.display_name FROM conversation_members cm
+                 JOIN users ru ON ru.id = cm.user_id
+                WHERE cm.conversation_id = ch.conversation_id AND cm.user_id != $1
+                LIMIT 1) AS other_name,
               (SELECT cm.user_id FROM conversation_members cm
-               WHERE cm.conversation_id = m.conversation_id
-               AND cm.user_id != $1 LIMIT 1) as remote_user_id,
-              (SELECT ru.display_name FROM conversation_members cm2
-               JOIN users ru ON ru.id = cm2.user_id
-               WHERE cm2.conversation_id = m.conversation_id
-               AND cm2.user_id != $1 LIMIT 1) as remote_display_name
-       FROM messages m
-       LEFT JOIN users u ON m.sender_id = u.id
-       WHERE m.type = 'system'
-         AND m.metadata IS NOT NULL
-         AND m.metadata->>'callType' IS NOT NULL
-         AND m.conversation_id IN (
-           SELECT conversation_id FROM conversation_members WHERE user_id = $1
-         )
-       ORDER BY m.created_at DESC
-       LIMIT $2 OFFSET $3`,
+                WHERE cm.conversation_id = ch.conversation_id AND cm.user_id != $1
+                LIMIT 1) AS other_user_id
+         FROM call_history ch
+         LEFT JOIN conversations conv ON conv.id = ch.conversation_id
+        WHERE ch.conversation_id IN (SELECT conversation_id FROM conversation_members WHERE user_id = $1)
+           OR ch.caller_id = $1
+           OR ch.host_user_id = $1
+        ORDER BY ch.started_at DESC
+        LIMIT $2 OFFSET $3`,
       [userId, parseInt(limit as string), parseInt(offset as string)]
     );
 
-    // Transform to call history format
+    // Map call_history.status → the 4 statuses the UI understands.
+    const mapStatus = (s: string): string => {
+      if (s === 'missed') return 'missed';
+      if (s === 'rejected' || s === 'declined') return 'declined';
+      if (s === 'failed') return 'failed';
+      return 'completed'; // ended / answered / ringing / initiated / scheduled
+    };
+
     const calls = result.rows.map((row: any) => {
-      const meta = typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata;
+      const isGroup = row.is_group_call === true;
+      const remoteName = isGroup
+        ? (row.conv_name || `Group ${row.call_type} call`)
+        : (row.other_name || 'Unknown');
       return {
         id: row.id,
-        sender_id: row.sender_id,
-        sender_name: row.sender_name,
+        sender_id: row.caller_id,
+        sender_name: null,
         conversation_id: row.conversation_id,
-        call_type: meta.callType || 'audio',
-        status: meta.status || 'completed',
-        duration_seconds: meta.duration || 0,
-        direction: meta.direction || 'outgoing',
-        remote_name: meta.remoteName || row.remote_display_name || 'Unknown',
-        remote_user_id: row.remote_user_id || null,
-        content: row.content,
-        started_at: row.created_at,
+        call_type: row.call_type || 'audio',
+        status: mapStatus(row.status),
+        duration_seconds: row.duration_seconds || 0,
+        // outgoing if I started it (caller or host); else incoming
+        direction: (row.caller_id === userId || row.host_user_id === userId) ? 'outgoing' : 'incoming',
+        remote_name: remoteName,
+        // Group calls have no single "call back" target → disable the callback buttons
+        remote_user_id: isGroup ? null : (row.other_user_id || null),
+        is_group_call: isGroup,
+        content: null,
+        started_at: row.started_at,
       };
     });
 
-    // Deduplicate — calls from both sides appear; keep only one per ~5 second window per conversation
-    const seen = new Map<string, boolean>();
-    const deduplicated = calls.filter((call: any) => {
-      const timeKey = Math.floor(new Date(call.started_at).getTime() / 5000);
-      const key = `${call.conversation_id}-${timeKey}`;
-      if (seen.has(key)) return false;
-      seen.set(key, true);
-      return true;
-    });
-
-    res.json({ calls: deduplicated });
+    res.json({ calls });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

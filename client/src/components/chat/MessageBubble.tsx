@@ -30,9 +30,58 @@ function getAvatarColor(name: string): string {
   return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
 }
 
+// Detect URLs (http/https and bare www.) and render them as clickable links —
+// Teams/WhatsApp style. Splits a plain string into text + <a> nodes.
+const URL_RE = /(https?:\/\/[^\s<]+|www\.[^\s<]+)/gi;
+
+function linkifyText(text: string, isOwn: boolean, keyBase: number): React.ReactNode {
+  if (!text || !URL_RE.test(text)) {
+    return <span key={keyBase} style={{ whiteSpace: 'pre-wrap' }}>{text}</span>;
+  }
+  URL_RE.lastIndex = 0; // regex has /g — reset before reuse
+  const nodes: React.ReactNode[] = [];
+  let last = 0;
+  let m: RegExpExecArray | null;
+  let i = 0;
+  while ((m = URL_RE.exec(text)) !== null) {
+    if (m.index > last) {
+      nodes.push(<span key={`${keyBase}-t${i}`} style={{ whiteSpace: 'pre-wrap' }}>{text.slice(last, m.index)}</span>);
+    }
+    const raw = m[0];
+    // Trailing punctuation shouldn't be part of the link (e.g. "see http://x.com.")
+    const trimmed = raw.replace(/[.,;:!?)\]]+$/, '');
+    const href = trimmed.startsWith('http') ? trimmed : `https://${trimmed}`;
+    nodes.push(
+      <a
+        key={`${keyBase}-l${i}`}
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          color: isOwn ? '#DCE3FF' : '#0078D4',
+          textDecoration: 'underline',
+          wordBreak: 'break-all',
+        }}
+      >
+        {trimmed}
+      </a>,
+    );
+    if (raw.length > trimmed.length) {
+      nodes.push(<span key={`${keyBase}-p${i}`}>{raw.slice(trimmed.length)}</span>);
+    }
+    last = m.index + raw.length;
+    i++;
+  }
+  if (last < text.length) {
+    nodes.push(<span key={`${keyBase}-t${i}`} style={{ whiteSpace: 'pre-wrap' }}>{text.slice(last)}</span>);
+  }
+  return <>{nodes}</>;
+}
+
 function renderContentWithMentions(content: string, mentions: MentionData[] | undefined, isOwn: boolean, currentUserId: string | undefined): React.ReactNode {
   if (!mentions || mentions.length === 0) {
-    return <span style={{ whiteSpace: 'pre-wrap' }}>{content}</span>;
+    return linkifyText(content, isOwn, 0);
   }
   // Build a regex that matches all @DisplayName patterns from mentions
   const parts: React.ReactNode[] = [];
@@ -52,11 +101,11 @@ function renderContentWithMentions(content: string, mentions: MentionData[] | un
       }
     }
     if (!matchedMention) {
-      parts.push(<span key={key++} style={{ whiteSpace: 'pre-wrap' }}>{remaining}</span>);
+      parts.push(linkifyText(remaining, isOwn, key++));
       break;
     }
     if (earliestIdx > 0) {
-      parts.push(<span key={key++} style={{ whiteSpace: 'pre-wrap' }}>{remaining.slice(0, earliestIdx)}</span>);
+      parts.push(linkifyText(remaining.slice(0, earliestIdx), isOwn, key++));
     }
     const isSelfOrEveryone = matchedMention.userId === currentUserId || matchedMention.userId === 'everyone';
     parts.push(

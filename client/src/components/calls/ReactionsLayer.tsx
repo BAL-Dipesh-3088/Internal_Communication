@@ -15,10 +15,20 @@
  * `pointer-events: none` so it doesn't intercept clicks.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useDataChannel } from '@livekit/components-react';
 
 export const REACTION_TOPIC = 'reaction';
+
+// LiveKit data messages are NOT echoed back to the sender, so the sender never
+// receives their own reaction over the data channel. ReactionsBar dispatches
+// this browser event locally so the sender sees their own emoji float too —
+// exactly what every other participant sees.
+export const LOCAL_REACTION_EVENT = 'bal:local-reaction';
+
+export function emitLocalReaction(payload: { emoji: string; senderName?: string; senderId?: string }) {
+  window.dispatchEvent(new CustomEvent(LOCAL_REACTION_EVENT, { detail: payload }));
+}
 
 interface ActiveReaction {
   id: string;
@@ -49,38 +59,44 @@ export default function ReactionsLayer() {
   const [reactions, setReactions] = useState<ActiveReaction[]>([]);
   const timersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
-  // Subscribe to the 'reaction' topic on the LiveKit data channel
+  // Spawn one floating emoji. Used by BOTH the remote data-channel listener
+  // and the local-echo listener (so the sender sees their own reaction).
+  const spawnReaction = useCallback((payload: ReactionPayload) => {
+    if (!payload?.emoji) return;
+    const newReaction: ActiveReaction = {
+      id: genId(),
+      emoji: payload.emoji,
+      // Random offset between 15% and 85% — keeps emojis away from the very edges
+      xPercent: 15 + Math.random() * 70,
+      senderName: payload.senderName,
+    };
+    setReactions((prev) => {
+      const next = prev.length >= MAX_CONCURRENT ? prev.slice(-MAX_CONCURRENT + 1) : prev;
+      return [...next, newReaction];
+    });
+    const timer = setTimeout(() => {
+      setReactions((prev) => prev.filter((r) => r.id !== newReaction.id));
+      timersRef.current.delete(newReaction.id);
+    }, REACTION_DURATION_MS);
+    timersRef.current.set(newReaction.id, timer);
+  }, []);
+
+  // Subscribe to the 'reaction' topic on the LiveKit data channel (remote senders)
   useDataChannel(REACTION_TOPIC, (msg) => {
     try {
-      const decoded = new TextDecoder().decode(msg.payload);
-      const payload: ReactionPayload = JSON.parse(decoded);
-      if (!payload?.emoji) return;
-
-      const newReaction: ActiveReaction = {
-        id: genId(),
-        emoji: payload.emoji,
-        // Random offset between 15% and 85% — keeps emojis away from the very edges
-        xPercent: 15 + Math.random() * 70,
-        senderName: payload.senderName,
-      };
-
-      setReactions((prev) => {
-        // Cap to prevent runaway DOM
-        const next = prev.length >= MAX_CONCURRENT ? prev.slice(-MAX_CONCURRENT + 1) : prev;
-        return [...next, newReaction];
-      });
-
-      // Auto-remove after animation completes
-      const timer = setTimeout(() => {
-        setReactions((prev) => prev.filter((r) => r.id !== newReaction.id));
-        timersRef.current.delete(newReaction.id);
-      }, REACTION_DURATION_MS);
-      timersRef.current.set(newReaction.id, timer);
+      const payload: ReactionPayload = JSON.parse(new TextDecoder().decode(msg.payload));
+      spawnReaction(payload);
     } catch (err) {
-      // Malformed payload — ignore silently
       console.warn('[ReactionsLayer] bad payload:', err);
     }
   });
+
+  // Local echo — the sender's own reaction (LiveKit doesn't echo data to sender)
+  useEffect(() => {
+    const handler = (e: Event) => spawnReaction((e as CustomEvent).detail as ReactionPayload);
+    window.addEventListener(LOCAL_REACTION_EVENT, handler);
+    return () => window.removeEventListener(LOCAL_REACTION_EVENT, handler);
+  }, [spawnReaction]);
 
   // Cleanup any pending timers on unmount
   useEffect(() => {

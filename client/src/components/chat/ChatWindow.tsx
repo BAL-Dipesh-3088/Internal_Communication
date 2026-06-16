@@ -325,8 +325,12 @@ export default function ChatWindow() {
           </div>
         )}
 
-        {/* Active meeting banner — appears when a group call is in progress in this conversation */}
-        {conversationId && conv?.type === 'group' && <ActiveMeetingBanner conversationId={conversationId} />}
+        {/* Active meeting banner — appears when a group call is in progress in
+            this conversation. Rendered for ALL conversation types (not just
+            'group') because a 1:1 call escalated with "Add people" becomes a
+            group call inside a DIRECT conversation — the person who left must
+            still see the Join banner. The banner self-hides when no call is active. */}
+        {conversationId && <ActiveMeetingBanner conversationId={conversationId} />}
 
         {/* Messages */}
         <MessageList

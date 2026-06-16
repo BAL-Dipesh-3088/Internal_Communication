@@ -8,7 +8,7 @@
 
 import { useRef, useState } from 'react';
 import { useDataChannel, useLocalParticipant } from '@livekit/components-react';
-import { REACTION_TOPIC } from './ReactionsLayer';
+import { REACTION_TOPIC, emitLocalReaction } from './ReactionsLayer';
 
 const REACTIONS: string[] = ['👍', '❤️', '😂', '👏', '🎉', '🙌'];
 
@@ -35,6 +35,10 @@ export default function ReactionsBar() {
       senderId: localParticipant?.identity,
       senderName: localParticipant?.name || localParticipant?.identity,
     };
+
+    // Show it on our OWN screen immediately (LiveKit won't echo our data
+    // message back to us, so without this the sender never sees their react).
+    emitLocalReaction(payload);
 
     try {
       await send(new TextEncoder().encode(JSON.stringify(payload)), {
