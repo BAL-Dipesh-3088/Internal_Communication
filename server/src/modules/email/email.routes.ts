@@ -349,21 +349,40 @@ router.get('/test', async (_req: AuthRequest, res: Response) => {
 
 // ─── IMAP (per-user inbox from Stalwart) ─────────────────
 
+// Per-user inbox cache. Two jobs:
+//   1. COLLAPSE LOAD — the unread-badge poller AND the open Email window both
+//      poll /inbox; with many users that's a flood of IMAP connections that
+//      can trip Stalwart's fail2ban. Within FRESH_MS we serve the cached copy
+//      and open ZERO connections.
+//   2. RESILIENCE — if an IMAP fetch fails (transient block, Stalwart restart),
+//      we serve the last-known-good inbox instead of a 500/blank screen.
+interface InboxCacheEntry { emails: any[]; account: string; ts: number; }
+const inboxCache = new Map<string, InboxCacheEntry>();
+const INBOX_CACHE_FRESH_MS = 25_000; // serve cached without re-fetching within this window
+
 router.get('/inbox', async (req: AuthRequest, res: Response) => {
+  const userId = req.user!.userId;
+  const { folder = 'INBOX', limit = '200' } = req.query;
+  const cacheKey = `${userId}:${folder}`;
+  const cached = inboxCache.get(cacheKey);
+
+  // Fresh cache hit → no IMAP connection at all.
+  if (cached && Date.now() - cached.ts < INBOX_CACHE_FRESH_MS) {
+    return res.json({ emails: cached.emails, total: cached.emails.length, folder, account: cached.account, cached: true });
+  }
+
   try {
-    // Default raised so users see a meaningful history of their inbox even if the
-    // client forgets to pass ?limit=. Stalwart handles this efficiently (envelope
-    // fetch is fast). Callers can still override with ?limit= for pagination.
-    const { folder = 'INBOX', limit = '200' } = req.query;
-    // Get the logged-in user's email + mail_password for per-user IMAP login
-    const cred = await resolveUserMailCredential(req.user!.userId);
-    const userEmail = cred.email;
-    const userMailPass = cred.mailPassword;
-    const userLogin = cred.loginName;
-    const emails = await fetchEmails(folder as string, parseInt(limit as string), userLogin, userMailPass);
-    res.json({ emails, total: emails.length, folder, account: userEmail });
+    const cred = await resolveUserMailCredential(userId);
+    const emails = await fetchEmails(folder as string, parseInt(limit as string), cred.loginName, cred.mailPassword);
+    inboxCache.set(cacheKey, { emails, account: cred.email, ts: Date.now() });
+    res.json({ emails, total: emails.length, folder, account: cred.email });
   } catch (err: any) {
     console.error('[EMAIL] Inbox fetch error:', err.message);
+    // Resilience: serve the last-known-good inbox rather than blanking the UI
+    // when IMAP is briefly unavailable (Stalwart restart / transient block).
+    if (cached) {
+      return res.json({ emails: cached.emails, total: cached.emails.length, folder, account: cached.account, cached: true, stale: true });
+    }
     res.status(500).json({ error: 'Inbox not available — ' + err.message });
   }
 });
