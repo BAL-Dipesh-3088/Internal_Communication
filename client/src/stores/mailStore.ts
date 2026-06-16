@@ -36,6 +36,8 @@ interface InboxMail {
   id: string;
   from: string;
   subject: string;
+  /** Real IMAP \Seen flag from the server (persistent read-state). */
+  seen?: boolean;
 }
 
 interface MailState {
@@ -61,7 +63,8 @@ export const useMailStore = create<MailState>((set, get) => {
   function processInbox(mails: InboxMail[]) {
     lastSnapshot = mails;
     const readIds = getReadIds();
-    const unread = mails.filter((m) => !readIds.has(m.id)).length;
+    // Unread = NOT marked \Seen on the server AND not in our local read cache.
+    const unread = mails.filter((m) => !m.seen && !readIds.has(m.id)).length;
 
     // New-mail detection by id — robust against deletions (count can shrink
     // while new mail still arrives) unlike the old count-based check.
@@ -98,6 +101,7 @@ export const useMailStore = create<MailState>((set, get) => {
           id: (e.id || e.uid)?.toString() || '',
           from: e.from || 'Unknown',
           subject: e.subject || '(No subject)',
+          seen: e.isRead === true,
         })).filter((m: InboxMail) => m.id);
         processInbox(mails);
       } catch {
@@ -109,7 +113,7 @@ export const useMailStore = create<MailState>((set, get) => {
 
     recomputeUnread: () => {
       const readIds = getReadIds();
-      set({ unreadCount: lastSnapshot.filter((m) => !readIds.has(m.id)).length });
+      set({ unreadCount: lastSnapshot.filter((m) => !m.seen && !readIds.has(m.id)).length });
     },
 
     startPolling: () => {

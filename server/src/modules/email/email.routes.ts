@@ -6,7 +6,7 @@ import { randomUUID } from 'crypto';
 import { authMiddleware, AuthRequest } from '../../middleware/auth';
 import { query } from '../../database/connection';
 import { sendEmail, resolveUserMailCredential } from './email.service';
-import { fetchEmails, testImapConnection, fetchImapAttachment, fetchThreadByMessageIds } from './imap.service';
+import { fetchEmails, testImapConnection, fetchImapAttachment, fetchThreadByMessageIds, markEmailSeen } from './imap.service';
 
 const EMAIL_ATTACH_DIR = path.resolve(process.env.UPLOAD_DIR || '../data', 'email-attachments');
 
@@ -384,6 +384,30 @@ router.get('/inbox', async (req: AuthRequest, res: Response) => {
       return res.json({ emails: cached.emails, total: cached.emails.length, folder, account: cached.account, cached: true, stale: true });
     }
     res.status(500).json({ error: 'Inbox not available — ' + err.message });
+  }
+});
+
+// POST /api/email/inbox/:uid/seen — mark a message read on Stalwart (persistent \Seen flag)
+// This is the REAL read-state: survives logout, other browsers, and devices —
+// unlike the client localStorage cache which is only an instant-UI optimisation.
+router.post('/inbox/:uid/seen', async (req: AuthRequest, res: Response) => {
+  try {
+    const uid = parseInt(String(req.params.uid), 10);
+    if (!uid || Number.isNaN(uid)) return res.status(400).json({ error: 'invalid uid' });
+    const cred = await resolveUserMailCredential(req.user!.userId);
+    await markEmailSeen(uid, 'INBOX', cred.loginName, cred.mailPassword);
+
+    // Keep the inbox cache consistent so the badge poll within the cache window
+    // reflects the new read state immediately (otherwise it'd re-show unread for ~25s).
+    const cached = inboxCache.get(`${req.user!.userId}:INBOX`);
+    if (cached) {
+      const m = cached.emails.find((e: any) => String(e.uid) === String(uid) || String(e.id) === String(uid));
+      if (m) m.isRead = true;
+    }
+    res.json({ ok: true });
+  } catch (err: any) {
+    console.error('[EMAIL] mark-seen error:', err.message);
+    res.status(500).json({ error: 'Failed to mark read — ' + err.message });
   }
 });
 

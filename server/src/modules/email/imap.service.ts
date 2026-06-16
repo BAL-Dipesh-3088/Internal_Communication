@@ -200,6 +200,37 @@ export async function fetchEmails(folder: string = 'INBOX', limit: number = 30, 
   return emails.reverse();
 }
 
+/**
+ * Mark a message as read by adding the IMAP \Seen flag on Stalwart.
+ *
+ * This is the REAL, persistent read-state (survives logout, different browsers,
+ * other devices) — unlike the client-side localStorage cache, which is only an
+ * instant-UI optimisation. Called when the user opens an inbox message.
+ */
+export async function markEmailSeen(
+  uid: number,
+  folder: string = 'INBOX',
+  userLoginName?: string,
+  mailPassword?: string,
+): Promise<void> {
+  const client = createClient(userLoginName, mailPassword);
+  try {
+    await client.connect();
+    const lock = await client.getMailboxLock(folder);
+    try {
+      await client.messageFlagsAdd(String(uid), ['\\Seen'], { uid: true });
+    } finally {
+      lock.release();
+    }
+  } catch (err: any) {
+    console.error('[IMAP] markSeen error:', err.message);
+    throw err;
+  } finally {
+    // Always release the connection (graceful logout — see fetchEmails note).
+    try { await client.logout(); } catch { try { client.close(); } catch { /* gone */ } }
+  }
+}
+
 export async function fetchFolders(): Promise<Array<{ id: string; name: string; count: number }>> {
   const client = createClient();
   const folders: Array<{ id: string; name: string; count: number }> = [];

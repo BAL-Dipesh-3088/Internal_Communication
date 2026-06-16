@@ -148,10 +148,12 @@ export default function EmailWindow() {
         preview: e.text_body?.substring(0, 120) || e.preview || '',
         body: e.html_body || e.body || e.text_body || '',
         date: e.created_at || e.date || new Date().toISOString(),
-        // For inbox: use local read tracking (persisted in localStorage)
-        // For sent/drafts/deleted: always mark as read
+        // Inbox read-state = the REAL IMAP \Seen flag from Stalwart (persists
+        // across logout/devices) OR our instant localStorage cache (for snappy
+        // UI before the server round-trip). Union of the two. Sent/drafts/
+        // deleted are always "read".
         isRead: f === 'inbox'
-          ? readEmailIds.current.has((e.id || e.uid)?.toString() || '')
+          ? (e.isRead === true || readEmailIds.current.has((e.id || e.uid)?.toString() || ''))
           : true,
         isStarred: e.isStarred || false,
         attachments: e.attachments || [],
@@ -169,7 +171,7 @@ export default function EmailWindow() {
       // fetch into it keeps it current and prevents double notifications.
       if (f === 'inbox') {
         useMailStore.getState().ingestInbox(
-          normalized.map((m: any) => ({ id: String(m.id), from: m.from, subject: m.subject })),
+          normalized.map((m: any) => ({ id: String(m.id), from: m.from, subject: m.subject, seen: m.isRead === true })),
         );
         prevInboxCountRef.current = normalized.length;
       }
@@ -217,9 +219,14 @@ export default function EmailWindow() {
     setReplyTo(null);
     setForwardEmail(null);
     setEditingDraft(null);
-    // Mark as read — persisted in localStorage so it survives refresh
+    // Mark read in two places:
+    //  1. localStorage + badge (instant, local) — markAsRead
+    //  2. Stalwart's \Seen flag (persistent across logout/devices) — fire-and-forget
     markAsRead(id);
     setEmails(prev => prev.map(e => e.id === id ? { ...e, isRead: true } : e));
+    if (activeFolder === 'inbox') {
+      api.post(`/email/inbox/${encodeURIComponent(id)}/seen`).catch(() => { /* non-fatal */ });
+    }
   };
 
   const handleCompose = () => {
