@@ -5,6 +5,7 @@ import type { Message } from '@/types';
 import MessageBubble from './MessageBubble';
 
 interface Props {
+  conversationId?: string;
   messages: Message[];
   isLoading: boolean;
   hasMore: boolean;
@@ -13,28 +14,41 @@ interface Props {
   onReply?: (message: Message) => void;
 }
 
-export default function MessageList({ messages, isLoading, hasMore, onLoadMore, currentUserId, onReply }: Props) {
+export default function MessageList({ conversationId, messages, isLoading, hasMore, onLoadMore, currentUserId, onReply }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const prevLengthRef = useRef(0);
+  // Whether we've already jumped to the bottom for the CURRENT conversation.
+  const didInitialScrollRef = useRef(false);
 
-  // Auto-scroll to bottom when new messages arrive
+  // When the conversation changes, reset so the next render jumps to the newest
+  // message. (The component isn't remounted on conversation switch, so without
+  // this it would stay scrolled wherever the previous chat left it — the bug.)
   useEffect(() => {
-    if (messages.length > prevLengthRef.current) {
+    didInitialScrollRef.current = false;
+    prevLengthRef.current = 0;
+  }, [conversationId]);
+
+  useEffect(() => {
+    if (messages.length === 0) return;
+
+    if (!didInitialScrollRef.current) {
+      // First time this conversation's messages render → jump straight to the
+      // bottom (no animation). A double rAF lets layout (incl. images) settle
+      // so we land truly at the newest message.
+      const jump = () => bottomRef.current?.scrollIntoView({ behavior: 'auto' });
+      requestAnimationFrame(() => requestAnimationFrame(jump));
+      didInitialScrollRef.current = true;
+    } else if (messages.length > prevLengthRef.current) {
+      // A new message arrived → smooth-scroll only if it's ours or we're already
+      // near the bottom (don't yank the user up if they're reading history).
       const lastMsg = messages[messages.length - 1];
       if (lastMsg?.sender_id === currentUserId || isNearBottom(containerRef.current)) {
         bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
       }
     }
     prevLengthRef.current = messages.length;
-  }, [messages.length, currentUserId]);
-
-  // Scroll to bottom on first load
-  useEffect(() => {
-    if (messages.length > 0 && prevLengthRef.current === 0) {
-      bottomRef.current?.scrollIntoView();
-    }
-  }, [messages]);
+  }, [messages.length, conversationId, currentUserId]);
 
   // Infinite scroll — load more when scrolling to top
   const handleScroll = () => {

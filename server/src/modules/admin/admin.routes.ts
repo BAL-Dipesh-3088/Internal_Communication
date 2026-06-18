@@ -4,6 +4,7 @@ import { query, pool } from '../../database/connection';
 import { getOnlineUsers } from '../../services/redis.service';
 import { config } from '../../config';
 import https from 'https';
+import net from 'net';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { ucmService } from '../../services/ucm.service';
@@ -29,7 +30,17 @@ router.get('/dashboard', async (_req: AuthRequest, res: Response) => {
         query('SELECT COUNT(*) as total FROM conversations'),
         query('SELECT COUNT(*) as total FROM messages WHERE deleted_at IS NULL'),
         query('SELECT COUNT(*) as total, COALESCE(SUM(size_bytes), 0) as total_size FROM files'),
-        query("SELECT COUNT(*) as total FROM call_history WHERE started_at > NOW() - INTERVAL '24 hours'"),
+        // Calls today = group/LiveKit calls (call_history) + 1:1 WebRTC calls
+        // (logged as chat system-messages). The two calling systems log to
+        // different places, so we count both.
+        query(`SELECT
+                 (SELECT COUNT(*) FROM call_history
+                    WHERE started_at > NOW() - INTERVAL '24 hours')
+                 +
+                 (SELECT COUNT(*) FROM messages
+                    WHERE type = 'system' AND metadata->>'callType' IS NOT NULL
+                      AND created_at > NOW() - INTERVAL '24 hours')
+               AS total`),
         getOnlineUsers(),
       ]);
 
@@ -1296,12 +1307,22 @@ router.get('/health', async (_req: AuthRequest, res: Response) => {
     checks.redis = { status: 'error', error: err.message };
   }
 
-  // UCM6304
+  // Stalwart mail server — TCP reachability to its SMTP listener
   try {
-    const ucmStatus = await checkUCMHealth();
-    checks.ucm6304 = ucmStatus;
+    checks.stalwart = await checkTcp(
+      process.env.STALWART_SMTP_HOST || 'stalwart',
+      parseInt(process.env.STALWART_SMTP_PORT || '587', 10),
+    );
   } catch (err: any) {
-    checks.ucm6304 = { status: 'error', error: err.message };
+    checks.stalwart = { status: 'error', error: err.message };
+  }
+
+  // LiveKit SFU — TCP reachability to its HTTP/WS port
+  try {
+    const lk = parseHostPort(process.env.LIVEKIT_HTTP_URL || 'http://livekit:7880', 7880);
+    checks.livekit = await checkTcp(lk.host, lk.port);
+  } catch (err: any) {
+    checks.livekit = { status: 'error', error: err.message };
   }
 
   // Disk usage
@@ -1309,7 +1330,7 @@ router.get('/health', async (_req: AuthRequest, res: Response) => {
   checks.memory = process.memoryUsage();
 
   // Only check services that have a status property (skip uptime/memory which are raw values)
-  const serviceChecks = ['database', 'redis', 'ucm6304'];
+  const serviceChecks = ['database', 'redis', 'stalwart', 'livekit'];
   const allOk = serviceChecks.every(
     (key) => checks[key] && checks[key].status === 'ok'
   );
@@ -1321,7 +1342,30 @@ router.get('/health', async (_req: AuthRequest, res: Response) => {
   });
 });
 
-// Helper: check UCM6304 API reachability
+// Lightweight TCP reachability probe — proves a service is up and accepting
+// connections, without auth or load. Used for Stalwart + LiveKit health.
+function checkTcp(host: string, port: number, timeoutMs = 4000): Promise<{ status: string; latencyMs?: number }> {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const socket = net.connect({ host, port });
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => { resolve({ status: 'ok', latencyMs: Date.now() - start }); socket.destroy(); });
+    socket.once('error', () => { resolve({ status: 'unreachable' }); socket.destroy(); });
+    socket.once('timeout', () => { resolve({ status: 'timeout' }); socket.destroy(); });
+  });
+}
+
+// Parse "http://host:port" → { host, port }, with a fallback port.
+function parseHostPort(url: string, defaultPort: number): { host: string; port: number } {
+  try {
+    const u = new URL(url);
+    return { host: u.hostname, port: u.port ? parseInt(u.port, 10) : defaultPort };
+  } catch {
+    return { host: url, port: defaultPort };
+  }
+}
+
+// Helper: check UCM6304 API reachability (retired — kept until full UCM removal)
 function checkUCMHealth(): Promise<{ status: string; latencyMs?: number }> {
   return new Promise((resolve) => {
     const start = Date.now();

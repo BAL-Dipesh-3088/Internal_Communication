@@ -334,6 +334,7 @@ export default function ChatWindow() {
 
         {/* Messages */}
         <MessageList
+          conversationId={conversationId}
           messages={searchText
             ? convMessages.filter((m) => m.content.toLowerCase().includes(searchText.toLowerCase()))
             : convMessages

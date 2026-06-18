@@ -7,6 +7,7 @@ import { authMiddleware, AuthRequest } from '../../middleware/auth';
 import { query } from '../../database/connection';
 import { sendEmail, resolveUserMailCredential } from './email.service';
 import { fetchEmails, testImapConnection, fetchImapAttachment, fetchThreadByMessageIds, markEmailSeen } from './imap.service';
+import { getIO } from '../../services/socket.service';
 
 const EMAIL_ATTACH_DIR = path.resolve(process.env.UPLOAD_DIR || '../data', 'email-attachments');
 
@@ -135,6 +136,30 @@ router.post('/send', emailUpload.array('attachments', 10), async (req: AuthReque
     if (verify.rows[0]) {
       console.log(`[SEND-VERIFY] Stored sent_email id=${verify.rows[0].id} message_id="${verify.rows[0].message_id}" (result.messageId we received was "${result.messageId}")`);
     }
+
+    // Real-time INTERNAL mail push (item 4 — zero extra IMAP polling):
+    // If any recipient is an internal ICP user, invalidate their cached inbox
+    // and emit 'mail:new' so their client refreshes immediately and sees this
+    // mail near-instantly. External recipients are unaffected (normal poll).
+    try {
+      const recipientEmails = [
+        ...(Array.isArray(to) ? to : [to]),
+        ...(Array.isArray(cc) ? cc : cc ? [cc] : []),
+        ...(Array.isArray(bcc) ? bcc : bcc ? [bcc] : []),
+      ].map((e: any) => String(e || '').trim().toLowerCase()).filter(Boolean);
+
+      if (recipientEmails.length > 0) {
+        const internal = await query(
+          'SELECT id FROM users WHERE lower(email) = ANY($1)',
+          [recipientEmails],
+        );
+        const io = getIO();
+        for (const row of internal.rows) {
+          inboxCache.delete(`${row.id}:INBOX`);          // force a fresh fetch
+          io.to(`user:${row.id}`).emit('mail:new');      // nudge their client to refresh
+        }
+      }
+    } catch (e) { /* push is best-effort; the email already sent fine */ }
 
     res.json({ success: true, messageId: result.messageId, accepted: result.accepted });
   } catch (err: any) {

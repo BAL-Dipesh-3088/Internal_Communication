@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import EmailWindow from '@/components/email/EmailWindow';
@@ -90,10 +90,19 @@ export default function AppLayout() {
     updateTitleBadge(totalUnread);
   }, [conversations]);
 
+  // Bumped to re-run the socket-listener effect if the socket wasn't ready yet
+  // at mount (resilient attach — item 3). Without this, a startup race where
+  // getSocket() is briefly null would leave live updates unbound until refresh.
+  const [socketRecheck, setSocketRecheck] = useState(0);
+
   // Socket event listeners
   useEffect(() => {
     const socket = getSocket();
-    if (!socket) return;
+    if (!socket) {
+      // Socket not created yet — re-check shortly instead of giving up forever.
+      const t = setTimeout(() => setSocketRecheck((n) => n + 1), 600);
+      return () => clearTimeout(t);
+    }
 
     // On every connect (including reconnect): init WebRTC, set presence, sync messages
     const onConnect = () => {
@@ -101,6 +110,9 @@ export default function AppLayout() {
       socket.emit('presence:heartbeat');
       socket.emit('presence:update', { status: 'online' });
       useCallStore.getState().initWebRTC(socket);
+      // Refresh the conversation list on every (re)connect so new chats, unread
+      // counts, and last-message previews are current after any disconnect.
+      fetchConversations();
       const allMessages = useChatStore.getState().messages;
       const conversations: Record<string, number> = {};
 
@@ -327,7 +339,18 @@ export default function AppLayout() {
     socket.on('group-call:participant-joined', onGroupCallParticipantJoined);
     socket.on('group-call:participant-left', onGroupCallParticipantLeft);
     socket.on('group-call:ended', onGroupCallEnded);
+    // Internal mail push — recipient's client refreshes the inbox instantly
+    // when someone sends them mail through ICP (item 4). No extra polling.
+    const onMailNew = () => { useMailStore.getState().refreshInbox(); };
+    socket.on('mail:new', onMailNew);
+
     socket.on('connect', onConnect);
+
+    // If the socket was ALREADY connected before these listeners attached
+    // (the common case on fresh load — 'connect' fired during checkAuth), the
+    // onConnect catch-up would otherwise never run. Trigger it once now so the
+    // initial sync + room state are current without needing a page refresh.
+    if (socket.connected) onConnect();
 
     // Heartbeat every 30 seconds
     const heartbeat = setInterval(() => {
@@ -348,10 +371,11 @@ export default function AppLayout() {
       socket.off('group-call:participant-joined', onGroupCallParticipantJoined);
       socket.off('group-call:participant-left', onGroupCallParticipantLeft);
       socket.off('group-call:ended', onGroupCallEnded);
+      socket.off('mail:new', onMailNew);
       socket.off('connect', onConnect);
       clearInterval(heartbeat);
     };
-  }, [user?.id, addMessage, updateMessage, removeMessage, setTyping, clearTyping, fetchConversations, updateConversation, addReaction, removeReaction]);
+  }, [user?.id, socketRecheck, addMessage, updateMessage, removeMessage, setTyping, clearTyping, fetchConversations, updateConversation, addReaction, removeReaction]);
 
   return (
     <>

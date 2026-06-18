@@ -1,6 +1,7 @@
 import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../../middleware/auth';
 import { query, getClient } from '../../database/connection';
+import { getIO } from '../../services/socket.service';
 import { z } from 'zod';
 
 const router = Router();
@@ -116,6 +117,19 @@ router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
     );
 
     await client.query('COMMIT');
+
+    // Real-time: put every member's live sockets into the new conversation room
+    // and notify them, so messages flow INSTANTLY without waiting for a reconnect
+    // (rooms otherwise only join on connect). Best-effort — never block the response.
+    try {
+      const io = getIO();
+      const members = [userId, ...input.memberIds.filter((m: string) => m !== userId)];
+      for (const memberId of members) {
+        io.in(`user:${memberId}`).socketsJoin(`conv:${convId}`);
+        io.to(`user:${memberId}`).emit('conversation:created', { conversationId: convId });
+      }
+    } catch (e) { /* socket layer optional; REST result already prepared */ }
+
     res.status(201).json(convResult.rows[0]);
   } catch (err: any) {
     await client.query('ROLLBACK');
@@ -262,21 +276,25 @@ router.post('/:id/members', authMiddleware, async (req: AuthRequest, res: Respon
       [convId]
     );
 
-    // Notify via Socket.IO so all clients update in real time
-    const io = (req as any).app?.get?.('io');
-    if (io) {
-      // Notify existing members about the new addition
-      io.to(`conversation:${convId}`).emit('conversation:members-updated', {
+    // Notify via Socket.IO so all clients update in real time. Use the shared
+    // getIO() + the canonical `conv:` room prefix (the rest of the app — message
+    // broadcasts, handleConnect — uses `conv:`, NOT `conversation:`).
+    try {
+      const io = getIO();
+      // Tell existing members the roster changed.
+      io.to(`conv:${convId}`).emit('conversation:members-updated', {
         conversationId: convId,
         members: membersResult.rows,
         memberCount: membersResult.rows.length,
       });
-
-      // Notify each newly added user so they see the conversation
+      // Put each newly-added user's live sockets into the room AND notify them,
+      // so they receive messages instantly without waiting for a reconnect.
       for (const added of addedUsers) {
+        io.in(`user:${added.id}`).socketsJoin(`conv:${convId}`);
         io.to(`user:${added.id}`).emit('conversation:added', { conversationId: convId });
+        io.to(`user:${added.id}`).emit('conversation:created', { conversationId: convId });
       }
-    }
+    } catch (e) { /* socket layer optional */ }
 
     res.json({
       added: addedUsers.length,

@@ -3,7 +3,7 @@ import {
   Users, MessageSquare, FileText, Phone, Activity,
   Search, Shield, HardDrive, Wifi, WifiOff,
   RefreshCw, Clock, Database, Server,
-  CheckCircle, XCircle, AlertTriangle, IdCard, Heart,
+  CheckCircle, XCircle, AlertTriangle, IdCard, Heart, Mail,
   Link, Unlink, Loader, X, Eye, Paperclip, Image, Download,
   UserPlus,
 } from 'lucide-react';
@@ -365,7 +365,7 @@ function OverviewTab({ stats, analytics }: { stats: DashboardStats; analytics: a
     { icon: <Users size={20} />, label: 'Total Users', value: stats.users.total, sub: `${stats.users.online} online`, color: '#6264A7', bgColor: '#F0F0FA' },
     { icon: <MessageSquare size={20} />, label: 'Messages Today', value: msgToday, sub: `${stats.messages} total`, color: '#0078D4', bgColor: '#E8F4FD', trend: msgTrend },
     { icon: <FileText size={20} />, label: 'Files', value: stats.files.count, sub: formatBytes(stats.files.totalSizeBytes), color: '#16A34A', bgColor: '#F0FDF4' },
-    { icon: <Phone size={20} />, label: 'Calls Today', value: stats.callsToday, sub: 'via UCM6304', color: '#D97706', bgColor: '#FFFBEB' },
+    { icon: <Phone size={20} />, label: 'Calls Today', value: stats.callsToday, sub: 'WebRTC & LiveKit', color: '#D97706', bgColor: '#FFFBEB' },
   ];
 
   // 7-day message data for line graph
@@ -1244,10 +1244,16 @@ function HealthTab({ health }: { health: SystemHealth }) {
       detail: checks.redis?.onlineUsers !== undefined ? `${checks.redis.onlineUsers} users tracked` : undefined,
     },
     {
-      name: 'UCM6304 SIP',
-      icon: checks.ucm6304?.status === 'ok' ? <Wifi size={22} /> : <WifiOff size={22} />,
-      status: checks.ucm6304?.status || 'unknown',
-      detail: checks.ucm6304?.latencyMs ? `${checks.ucm6304.latencyMs}ms — 192.168.7.2` : '192.168.7.2',
+      name: 'Stalwart Mail',
+      icon: <Mail size={22} />,
+      status: checks.stalwart?.status || 'unknown',
+      detail: checks.stalwart?.latencyMs !== undefined ? `${checks.stalwart.latencyMs}ms latency` : undefined,
+    },
+    {
+      name: 'LiveKit',
+      icon: checks.livekit?.status === 'ok' ? <Wifi size={22} /> : <WifiOff size={22} />,
+      status: checks.livekit?.status || 'unknown',
+      detail: checks.livekit?.latencyMs !== undefined ? `${checks.livekit.latencyMs}ms latency` : undefined,
     },
   ];
 
