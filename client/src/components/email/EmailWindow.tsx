@@ -546,6 +546,8 @@ export default function EmailWindow() {
           <EmailCompose
             userEmail={userEmail}
             userName={user?.display_name || user?.username || ''}
+            userDesignation={user?.designation || ''}
+            userDepartment={user?.department || ''}
             replyTo={replyTo}
             forwardEmail={forwardEmail}
             editingDraft={editingDraft}
@@ -1611,12 +1613,32 @@ function RecipientField({
 /* ===================================================================
    EMAIL COMPOSE — Outlook-Style
    =================================================================== */
-function EmailCompose({ userEmail, userName, replyTo, forwardEmail, editingDraft, onSend, onSaveDraft, onDiscard }: {
-  userEmail: string; userName: string; replyTo?: any; forwardEmail?: any; editingDraft?: any;
+// Escape user-derived text before putting it into the signature HTML string.
+function escapeHtmlAttr(s: string): string {
+  return String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function EmailCompose({ userEmail, userName, userDesignation, userDepartment, replyTo, forwardEmail, editingDraft, onSend, onSaveDraft, onDiscard }: {
+  userEmail: string; userName: string; userDesignation?: string; userDepartment?: string; replyTo?: any; forwardEmail?: any; editingDraft?: any;
   onSend: (data: { to: string[]; cc: string[]; bcc: string[]; subject: string; body: string; attachments?: File[]; inReplyTo?: string; references?: string[] }) => void;
   onSaveDraft?: (data: { to: string[]; cc: string[]; bcc: string[]; subject: string; body: string }) => void;
   onDiscard: () => void;
 }) {
+  // Signature role line — dynamic from the DB (designation, falling back to
+  // department). NOTHING hardcoded. e.g. "Dy. Manager | Balasore Alloys Limited".
+  const roleLine = [userDesignation?.trim() || userDepartment?.trim(), 'Balasore Alloys Limited']
+    .filter(Boolean)
+    .join(' | ');
+  // Signature HTML actually appended to the OUTGOING email (so recipients see it).
+  const signatureHtml =
+    `<br><br><div style="font-size:13px;color:#666;font-family:'Segoe UI',Calibri,sans-serif">` +
+    `Regards,<br><strong>${escapeHtmlAttr(userName)}</strong>` +
+    (roleLine ? `<br>${escapeHtmlAttr(roleLine)}` : '') +
+    `</div>`;
   // Initialize from draft, reply, or empty
   const draftTo = editingDraft?.to ? (Array.isArray(editingDraft.to) ? editingDraft.to : JSON.parse(editingDraft.to || '[]')) : [];
   const draftCc = editingDraft?.cc ? (Array.isArray(editingDraft.cc) ? editingDraft.cc : JSON.parse(editingDraft.cc || '[]')) : [];
@@ -1701,7 +1723,9 @@ function EmailCompose({ userEmail, userName, replyTo, forwardEmail, editingDraft
     }
     // Diagnostic log — visible in browser DevTools console
     console.log('[COMPOSE] Sending email. replyTo.messageId=', replyTo?.messageId, 'inReplyTo=', inReplyTo, 'references=', references);
-    onSend({ to, cc, bcc, subject, body: bodyRef.current?.innerHTML || '', attachments: attachments.length > 0 ? attachments : undefined, inReplyTo, references });
+    // Append the dynamic signature to the outgoing body so recipients receive it.
+    const composed = (bodyRef.current?.innerHTML || '') + signatureHtml;
+    onSend({ to, cc, bcc, subject, body: composed, attachments: attachments.length > 0 ? attachments : undefined, inReplyTo, references });
   };
 
   return (
@@ -1876,7 +1900,7 @@ function EmailCompose({ userEmail, userName, replyTo, forwardEmail, editingDraft
       <div style={{ padding: '12px 24px', borderTop: '1px solid #F0F0F0', fontSize: 12, color: '#8B8CA7', background: '#FAFAFA', flexShrink: 0 }}>
         <p style={{ margin: 0 }}>Regards,</p>
         <p style={{ margin: '2px 0 0', fontWeight: 600, color: '#424242' }}>{userName}</p>
-        <p style={{ margin: '2px 0 0' }}>GET-IT | Balasore Alloys Limited</p>
+        {roleLine && <p style={{ margin: '2px 0 0' }}>{roleLine}</p>}
       </div>
     </div>
   );
