@@ -467,6 +467,31 @@ export default function MessageInput({ conversationId, replyTo, onClearReply }: 
     }
   };
 
+  // Paste-to-attach: when the clipboard holds a file (e.g. a screenshot copied
+  // with Win+Shift+S / PrintScreen, or a copied image/document), attach it like
+  // any picked file. Screenshots arrive with no filename, so we name them.
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const pasted: File[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.kind === 'file') {
+        const f = item.getAsFile();
+        if (!f) continue;
+        const ext = (f.type.split('/')[1] || 'png').split('+')[0];
+        const named = f.name && f.name !== 'image.png'
+          ? f
+          : new File([f], `pasted-${Date.now()}.${ext}`, { type: f.type });
+        pasted.push(named);
+      }
+    }
+    if (pasted.length > 0) {
+      e.preventDefault(); // don't also dump raw image data into the text box
+      setFiles((prev) => [...prev, ...pasted]);
+    }
+  };
+
   const removeFile = (idx: number) => {
     setFiles((f) => f.filter((_, i) => i !== idx));
   };
@@ -737,6 +762,7 @@ export default function MessageInput({ conversationId, replyTo, onClearReply }: 
               detectMention(value, cursorPos);
             }}
             onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
             onFocus={() => setIsFocused(true)}
             onBlur={() => setIsFocused(false)}
             placeholder={replyTo ? 'Type your reply...' : 'Type a message...'}

@@ -1888,6 +1888,29 @@ function EmailCompose({ userEmail, userName, userDesignation, userDepartment, re
         ref={bodyRef}
         contentEditable
         suppressContentEditableWarning
+        onPaste={(e) => {
+          // Paste-to-attach: clipboard images (screenshots) / documents become
+          // email attachments. Normal text/HTML paste falls through untouched.
+          const items = e.clipboardData?.items;
+          if (!items) return;
+          const pasted: File[] = [];
+          for (let i = 0; i < items.length; i++) {
+            if (items[i].kind === 'file') {
+              const f = items[i].getAsFile();
+              if (!f) continue;
+              const ext = (f.type.split('/')[1] || 'png').split('+')[0];
+              pasted.push(
+                f.name && f.name !== 'image.png'
+                  ? f
+                  : new File([f], `pasted-${Date.now()}.${ext}`, { type: f.type }),
+              );
+            }
+          }
+          if (pasted.length > 0) {
+            e.preventDefault(); // don't inline-embed; attach instead
+            setAttachments((prev) => [...prev, ...pasted]);
+          }
+        }}
         style={{
           flex: 1, padding: '20px 24px', overflowY: 'auto', outline: 'none',
           fontSize: 14, lineHeight: 1.7, color: '#333', fontFamily: "'Segoe UI', Calibri, sans-serif",
