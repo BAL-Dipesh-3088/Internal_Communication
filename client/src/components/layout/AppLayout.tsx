@@ -15,6 +15,7 @@ import IncomingCallModal from '@/components/calls/IncomingCallModal';
 import IncomingGroupCallModal from '@/components/calls/IncomingGroupCallModal';
 import ActiveCallOverlay from '@/components/calls/ActiveCallOverlay';
 import GroupCallOverlay from '@/components/calls/GroupCallOverlay';
+import MeetingReminders from '@/components/calendar/MeetingReminders';
 import {
   initFocusTracking,
   shouldNotify,
@@ -423,6 +424,8 @@ export default function AppLayout() {
       <IncomingGroupCallModal />
       <ActiveCallOverlay />
       <GroupCallOverlay />
+      {/* Teams-style meeting reminder popups (top-right, app-wide) */}
+      <MeetingReminders />
     </>
   );
 }

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, MapPin, Clock, Users, FileText, Palette, Video, Link2, Check } from 'lucide-react';
+import { X, MapPin, Clock, Users, FileText, Palette, Video, Link2, Check, Bell } from 'lucide-react';
 import api from '@/services/api';
 
 /* ===================================================================
@@ -19,7 +19,18 @@ interface CalendarEvent {
   // Phase A — online meeting fields
   is_online_meeting?: boolean;
   livekit_call_id?: string | null;
+  reminder_minutes?: number;
 }
+
+// Teams-style reminder lead-time choices (minutes before start; 0 = none).
+const REMINDER_OPTIONS: { value: number; label: string }[] = [
+  { value: 0, label: 'None' },
+  { value: 5, label: '5 minutes before' },
+  { value: 10, label: '10 minutes before' },
+  { value: 15, label: '15 minutes before' },
+  { value: 30, label: '30 minutes before' },
+  { value: 60, label: '1 hour before' },
+];
 
 interface Contact {
   id: string;
@@ -78,6 +89,9 @@ export default function CreateEventModal({ editingEvent, prefillTime, onClose, o
   // and the link gets displayed below the toggle (read-only after creation —
   // the meeting URL is the /meeting/<livekit_call_id> stable link).
   const [isOnlineMeeting, setIsOnlineMeeting] = useState(!!editingEvent?.is_online_meeting);
+  const [reminderMinutes, setReminderMinutes] = useState<number>(
+    editingEvent?.reminder_minutes ?? 15
+  );
   const [linkCopied, setLinkCopied] = useState(false);
 
   // Attendees
@@ -141,6 +155,7 @@ export default function CreateEventModal({ editingEvent, prefillTime, onClose, o
         color,
         attendee_ids: attendees.map(a => a.id),
         is_online_meeting: isOnlineMeeting,
+        reminder_minutes: reminderMinutes,
       };
 
       if (editingEvent) {
@@ -276,6 +291,27 @@ export default function CreateEventModal({ editingEvent, prefillTime, onClose, o
                   transition: 'left 0.15s', boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
                 }} />
               </button>
+            </div>
+          </div>
+
+          {/* Reminder — Teams-style "remind me N minutes before". */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+            <Bell size={16} color="#8B8CA7" style={{ flexShrink: 0 }} />
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+              <span style={{ fontSize: 13, color: '#424242' }}>Reminder</span>
+              <select
+                value={reminderMinutes}
+                onChange={e => setReminderMinutes(Number(e.target.value))}
+                style={{
+                  padding: '7px 10px', border: '1px solid #E0E0E0', borderRadius: 4,
+                  fontSize: 13, color: '#242424', outline: 'none', cursor: 'pointer',
+                  background: '#fff', fontFamily: 'inherit', minWidth: 170,
+                }}
+              >
+                {REMINDER_OPTIONS.map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
             </div>
           </div>
 

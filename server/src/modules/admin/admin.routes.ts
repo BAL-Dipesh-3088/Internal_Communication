@@ -1047,6 +1047,102 @@ router.delete('/feedback/:id', async (req: AuthRequest, res: Response) => {
 });
 
 // ============================================
+// USERS LOGIN — sign-in audit (Admin Panel → Users Login)
+// ============================================
+
+// Allowed date-range presets → SQL lower-bound expression (server timezone).
+// "today"/"yesterday" are calendar-day windows; the rest are rolling windows.
+const LOGIN_RANGES: Record<string, { lower: string; upper?: string; label: string }> = {
+  today:     { lower: "date_trunc('day', NOW())",                              label: 'Today' },
+  yesterday: { lower: "date_trunc('day', NOW()) - INTERVAL '1 day'",
+               upper: "date_trunc('day', NOW())",                             label: 'Yesterday' },
+  last7:     { lower: "NOW() - INTERVAL '7 days'",                            label: 'Last 7 days' },
+  last14:    { lower: "NOW() - INTERVAL '14 days'",                           label: 'Last 2 weeks' },
+  last30:    { lower: "NOW() - INTERVAL '30 days'",                           label: 'Last month' },
+};
+
+// GET /api/admin/login-activity?range=&q=&page=&limit=
+// Returns paginated sign-in events for the chosen window + a summary
+// (unique users / total logins). Modeled on Azure AD sign-in logs.
+router.get('/login-activity', async (req: AuthRequest, res: Response) => {
+  try {
+    const rangeKey = String(req.query.range || 'today');
+    const range = LOGIN_RANGES[rangeKey] || LOGIN_RANGES.today;
+    const q = String(req.query.q || '').trim();
+    const page = Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1);
+    const limit = Math.min(100, Math.max(10, parseInt(String(req.query.limit || '50'), 10) || 50));
+    const offset = (page - 1) * limit;
+
+    // Build the WHERE clause: time window + optional name/employee-id search.
+    const where: string[] = [`le.logged_in_at >= ${range.lower}`];
+    if (range.upper) where.push(`le.logged_in_at < ${range.upper}`);
+    const params: any[] = [];
+    if (q) {
+      params.push(`%${q}%`);
+      where.push(`(u.display_name ILIKE $${params.length} OR u.username ILIKE $${params.length} OR u.employee_id ILIKE $${params.length})`);
+    }
+    const whereSql = 'WHERE ' + where.join(' AND ');
+
+    // Summary over the whole window (not just the current page).
+    const summary = await query(
+      `SELECT COUNT(*)::int AS total_logins,
+              COUNT(DISTINCT le.user_id)::int AS unique_users
+         FROM login_events le
+         JOIN users u ON u.id = le.user_id
+         ${whereSql}`,
+      params,
+    );
+
+    // Page of events, newest first.
+    const pageParams = [...params, limit, offset];
+    const events = await query(
+      `SELECT le.id, le.logged_in_at, le.ip_address, le.user_agent,
+              u.id AS user_id, u.display_name, u.username, u.employee_id,
+              u.department, u.avatar_url
+         FROM login_events le
+         JOIN users u ON u.id = le.user_id
+         ${whereSql}
+         ORDER BY le.logged_in_at DESC
+         LIMIT $${pageParams.length - 1} OFFSET $${pageParams.length}`,
+      pageParams,
+    );
+
+    res.json({
+      range: rangeKey,
+      rangeLabel: range.label,
+      summary: summary.rows[0],
+      page,
+      limit,
+      events: events.rows.map((r: any) => ({
+        ...r,
+        device: parseUserAgent(r.user_agent),
+      })),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** Minimal, dependency-free UA → "Browser on OS" summary for the login table. */
+function parseUserAgent(ua: string | null): string {
+  if (!ua) return 'Unknown device';
+  const browser =
+    /Edg\//.test(ua) ? 'Edge' :
+    /OPR\/|Opera/.test(ua) ? 'Opera' :
+    /Chrome\//.test(ua) ? 'Chrome' :
+    /Firefox\//.test(ua) ? 'Firefox' :
+    /Safari\//.test(ua) ? 'Safari' : 'Browser';
+  const os =
+    /Windows NT 10/.test(ua) ? 'Windows' :
+    /Windows/.test(ua) ? 'Windows' :
+    /Android/.test(ua) ? 'Android' :
+    /iPhone|iPad|iOS/.test(ua) ? 'iOS' :
+    /Mac OS X/.test(ua) ? 'macOS' :
+    /Linux/.test(ua) ? 'Linux' : 'Unknown OS';
+  return `${browser} on ${os}`;
+}
+
+// ============================================
 // EMPLOYEE DIRECTORY (corporate SAP master — read-only)
 // ============================================
 

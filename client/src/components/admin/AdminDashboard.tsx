@@ -5,13 +5,14 @@ import {
   RefreshCw, Clock, Database, Server,
   CheckCircle, XCircle, AlertTriangle, IdCard, Heart, Mail,
   Link, Unlink, Loader, X, Eye, Paperclip, Image, Download,
-  UserPlus,
+  UserPlus, LogIn,
 } from 'lucide-react';
 import api from '@/services/api';
 import MailAccountSection, { MailStatusBadge } from './MailAccountSection';
 import OnboardTab from './OnboardTab';
 import EmployeeIdsTab from './EmployeeIdsTab';
 import FeedbackTab from './FeedbackTab';
+import LoginActivityTab from './LoginActivityTab';
 
 interface DashboardStats {
   users: { total: number; online: number };
@@ -27,7 +28,7 @@ interface SystemHealth {
   checks: Record<string, any>;
 }
 
-type Tab = 'overview' | 'users' | 'onboard' | 'employees' | 'conversations' | 'feedback' | 'search' | 'health';
+type Tab = 'overview' | 'users' | 'onboard' | 'employees' | 'conversations' | 'logins' | 'feedback' | 'search' | 'health';
 
 const TAB_LIST: { key: Tab; label: string; icon: React.ReactNode }[] = [
   { key: 'overview', label: 'Overview', icon: <Activity size={15} /> },
@@ -35,6 +36,7 @@ const TAB_LIST: { key: Tab; label: string; icon: React.ReactNode }[] = [
   { key: 'onboard', label: 'Onboard', icon: <UserPlus size={15} /> },
   { key: 'employees', label: 'Employee IDs', icon: <IdCard size={15} /> },
   { key: 'conversations', label: 'Conversations', icon: <MessageSquare size={15} /> },
+  { key: 'logins', label: 'Users Login', icon: <LogIn size={15} /> },
   { key: 'feedback', label: 'Feedback', icon: <Heart size={15} /> },
   { key: 'search', label: 'Search', icon: <Search size={15} /> },
   { key: 'health', label: 'Health', icon: <Server size={15} /> },
@@ -179,6 +181,7 @@ export default function AdminDashboard() {
         {activeTab === 'onboard' && <OnboardTab />}
         {activeTab === 'employees' && <EmployeeIdsTab />}
         {activeTab === 'feedback' && <FeedbackTab />}
+        {activeTab === 'logins' && <LoginActivityTab />}
         {activeTab === 'conversations' && <ConversationsTab conversations={conversations} />}
         {activeTab === 'search' && <SearchTab query={searchQuery} onQueryChange={setSearchQuery} onSearch={handleSearch} results={searchResults} />}
         {activeTab === 'health' && health && <HealthTab health={health} />}

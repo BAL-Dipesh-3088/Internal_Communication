@@ -7,6 +7,21 @@ import { z } from 'zod';
 const router = Router();
 const authService = new AuthService();
 
+/**
+ * Persist one login-audit row. Best-effort: callers fire-and-forget so a logging
+ * failure can never break sign-in. IP comes from req.ip (trust-proxy resolves the
+ * real client behind nginx); the raw user-agent is parsed to browser/OS at read.
+ */
+async function recordLoginEvent(userId: string, req: Request): Promise<void> {
+  const ip = (req.ip || '').replace(/^::ffff:/, '').slice(0, 45) || null;
+  const ua = String(req.headers['user-agent'] || '').slice(0, 1000) || null;
+  const { query: dbQuery } = await import('../../database/connection');
+  await dbQuery(
+    'INSERT INTO login_events (user_id, ip_address, user_agent) VALUES ($1, $2, $3)',
+    [userId, ip, ua]
+  );
+}
+
 // Brute-force protection on credential endpoints. Each office machine has its
 // own LAN IP, so a per-IP limit doesn't punish other users. 20 attempts per
 // 15 minutes is far above any honest user's typo rate, while making password
@@ -81,6 +96,13 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
   try {
     const input = loginSchema.parse(req.body);
     const result = await authService.login(input);
+
+    // Record the successful sign-in for Admin → Users Login (audit trail).
+    // Fire-and-forget: a logging failure must never block or fail the login.
+    recordLoginEvent(result.user.id, req).catch((e) =>
+      console.warn('[Auth] login-event record failed:', e?.message)
+    );
+
     res.json(result);
   } catch (err: any) {
     if (err instanceof z.ZodError) {

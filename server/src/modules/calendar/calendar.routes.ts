@@ -84,6 +84,17 @@ async function resolveRecipients(userIds: string[]): Promise<InviteRecipient[]> 
   }));
 }
 
+/**
+ * Clamp the reminder lead time to a sane, whitelisted set of minutes.
+ * Anything unexpected falls back to the Teams default (15). 0 = no reminder.
+ */
+function normalizeReminderMinutes(value: unknown): number {
+  const allowed = [0, 5, 10, 15, 30, 60, 120, 1440];
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 15;
+  return allowed.includes(n) ? n : 15;
+}
+
 // ─── GET EVENTS (date range) ─────────────────────────────
 
 router.get('/events', async (req: AuthRequest, res: Response) => {
@@ -165,21 +176,23 @@ router.post('/events', async (req: AuthRequest, res: Response) => {
     const {
       title, description, start_time, end_time, is_all_day, location, color, attendee_ids,
       is_online_meeting, // NEW — Teams-style toggle
+      reminder_minutes,  // NEW — Teams-style reminder lead time (0 = none)
     } = req.body;
 
     if (!title?.trim()) return res.status(400).json({ error: 'Title is required' });
     if (!start_time || !end_time) return res.status(400).json({ error: 'Start and end time required' });
 
     const onlineMeeting = !!is_online_meeting;
+    const reminderMinutes = normalizeReminderMinutes(reminder_minutes);
 
     await client.query('BEGIN');
 
     // Create event (livekit_call_id is set later if online meeting)
     const eventResult = await client.query(
-      `INSERT INTO calendar_events (title, description, start_time, end_time, is_all_day, location, color, created_by, is_online_meeting)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO calendar_events (title, description, start_time, end_time, is_all_day, location, color, created_by, is_online_meeting, reminder_minutes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
-      [title.trim(), description || null, start_time, end_time, is_all_day || false, location || null, color || '#5B5FC7', userId, onlineMeeting]
+      [title.trim(), description || null, start_time, end_time, is_all_day || false, location || null, color || '#5B5FC7', userId, onlineMeeting, reminderMinutes]
     );
 
     const event = eventResult.rows[0];
@@ -328,7 +341,11 @@ router.put('/events/:eventId', async (req: AuthRequest, res: Response) => {
       return res.status(403).json({ error: 'Only the event creator can edit' });
     }
 
-    const { title, description, start_time, end_time, is_all_day, location, color, attendee_ids } = req.body;
+    const { title, description, start_time, end_time, is_all_day, location, color, attendee_ids, reminder_minutes } = req.body;
+
+    // Only override the reminder when the client actually sent a value, so an
+    // edit that omits the field keeps the existing reminder.
+    const reminderMinutes = reminder_minutes === undefined ? null : normalizeReminderMinutes(reminder_minutes);
 
     await client.query('BEGIN');
 
@@ -344,10 +361,11 @@ router.put('/events/:eventId', async (req: AuthRequest, res: Response) => {
            is_all_day = COALESCE($5, is_all_day),
            location = COALESCE($6, location),
            color = COALESCE($7, color),
+           reminder_minutes = COALESCE($9, reminder_minutes),
            ical_sequence = ical_sequence + 1,
            updated_at = NOW()
        WHERE id = $8`,
-      [title, description, start_time, end_time, is_all_day, location, color, eventId]
+      [title, description, start_time, end_time, is_all_day, location, color, eventId, reminderMinutes]
     );
 
     // Update attendees if provided
@@ -544,6 +562,42 @@ router.patch('/events/:eventId/respond', async (req: AuthRequest, res: Response)
     }
 
     res.json({ success: true, status });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── UPCOMING REMINDERS (drives the Teams-style popup) ───
+//
+// Returns the current user's meetings that are about to start, so the client
+// can schedule the reminder popup. We return everything starting within the
+// next 2 hours (and not yet over) where a reminder is enabled and the user
+// hasn't declined — the client decides the exact fire moment from
+// reminder_minutes. Kept deliberately small (no attendee join) for a fast,
+// frequently-polled endpoint.
+router.get('/reminders/upcoming', async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const result = await query(
+      `SELECT e.id, e.title, e.start_time, e.end_time, e.location, e.color,
+              e.is_online_meeting, e.livekit_call_id, e.reminder_minutes,
+              u.display_name AS creator_name
+         FROM calendar_events e
+         LEFT JOIN users u ON u.id = e.created_by
+        WHERE e.reminder_minutes > 0
+          AND e.end_time > NOW()
+          AND e.start_time <= NOW() + INTERVAL '2 hours'
+          AND (
+            e.created_by = $1
+            OR EXISTS (
+              SELECT 1 FROM event_attendees ea
+               WHERE ea.event_id = e.id AND ea.user_id = $1 AND ea.status <> 'declined'
+            )
+          )
+        ORDER BY e.start_time ASC`,
+      [userId],
+    );
+    res.json({ events: result.rows });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

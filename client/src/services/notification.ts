@@ -200,6 +200,23 @@ export function playMessageSound(): void {
 }
 
 // ============================================
+// Audio: Meeting Reminder Chime — gentle 3-note rise (G5→C6→E6)
+// Distinct from the message chime so a reminder is recognisable.
+// ============================================
+
+export function playReminderSound(): void {
+  try {
+    const ctx = getAudioContext();
+    const now = ctx.currentTime;
+    playNote(ctx, 783.99, now, 0.35, 0.22);        // G5
+    playNote(ctx, 1046.5, now + 0.16, 0.35, 0.22); // C6
+    playNote(ctx, 1318.51, now + 0.32, 0.5, 0.18);  // E6 (longer, softer)
+  } catch (err) {
+    console.error('[Notification] Reminder sound failed:', err);
+  }
+}
+
+// ============================================
 // Audio: Call Ringtone — Melodic Teams-like arpeggio
 // E5→G5→B5→E6 ascending chord, loops every 3s
 // ============================================

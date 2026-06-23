@@ -75,6 +75,11 @@ async function bootstrap() {
   // 4. Create Express app
   const app = express();
 
+  // Behind the nginx reverse proxy. Trust the first hop so req.ip reflects the
+  // real client (X-Forwarded-For) instead of the nginx container IP — needed for
+  // accurate login-audit IPs and correct per-client rate limiting.
+  app.set('trust proxy', 1);
+
   // Use HTTPS if certificates exist (required for WebRTC mic/camera)
   const certPath = path.resolve(__dirname, '../../certs/server.crt');
   const keyPath = path.resolve(__dirname, '../../certs/server.key');
