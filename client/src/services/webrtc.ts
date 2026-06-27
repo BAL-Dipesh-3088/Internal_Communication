@@ -165,11 +165,16 @@ class WebRTCService {
             } : false,
           });
         } catch (mediaErr: any) {
-          console.warn('[WebRTC] getUserMedia failed for', callType, '- falling back to audio-only:', mediaErr.message);
-          // Fallback: try audio only
+          console.warn('[WebRTC] camera unavailable for', callType, '- answering with camera OFF (call stays', callType + '):', mediaErr.message);
+          // Camera unavailable (permission denied, no device, or — common in
+          // multi-tab testing — already held by another browser tab). CRUCIAL:
+          // we do NOT flip the call TYPE to audio. Doing so hid the caller's
+          // video entirely and showed the receiver an "Audio Call". We keep it a
+          // video call with our camera off: the caller's offer already carries a
+          // video m-line, so setRemoteDescription auto-creates a recvonly video
+          // transceiver and we still RECEIVE and render the caller's video.
           try {
             stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-            call.callType = 'audio'; // Downgrade to audio
           } catch (audioErr: any) {
             console.error('[WebRTC] Cannot get any media device:', audioErr.message);
             this.cleanupCall(callId);
@@ -448,10 +453,12 @@ class WebRTCService {
           } : false,
         });
       } catch (mediaErr: any) {
-        console.warn('[WebRTC] getUserMedia failed for', callType, '- trying audio-only:', mediaErr.message);
+        console.warn('[WebRTC] camera unavailable for', callType, '- continuing with camera OFF (call stays', callType + '):', mediaErr.message);
         try {
+          // Keep the call TYPE unchanged (do NOT downgrade video→audio). Continue
+          // with audio only; the recvonly video m-line added below lets us still
+          // RECEIVE the other party's video.
           stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-          call.callType = 'audio';
         } catch (audioErr: any) {
           console.error('[WebRTC] Cannot access microphone:', audioErr.message);
           this.cleanupCall(callId);
@@ -461,6 +468,12 @@ class WebRTCService {
       }
       call.localStream = stream;
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
+      // Video call but no local camera track (camera unavailable): still
+      // negotiate a recvonly video m-line so the offer carries video and we
+      // RECEIVE the remote party's camera even though we send none.
+      if (call.callType === 'video' && stream.getVideoTracks().length === 0) {
+        try { pc.addTransceiver('video', { direction: 'recvonly' }); } catch { /* older browsers */ }
+      }
       console.log('[WebRTC] Local media acquired:', stream.getTracks().map(t => t.kind).join(', '));
 
       if (isOfferer) {

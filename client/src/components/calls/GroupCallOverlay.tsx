@@ -204,8 +204,14 @@ function GroupCallContent() {
   //   3. None → fall back to equal-size grid
   //
   // The carousel (right-side strip) shows every OTHER tile.
+  // NOTE: we deliberately do NOT require `t.publication?.track` here. Gating on a
+  // subscribed track created a render/subscribe deadlock for viewers: the tile
+  // only mounted once subscribed, but the subscription (adaptiveStream) only
+  // fires once the tile mounts → the shared screen could never appear for the
+  // recipient. Keying off the publication alone makes the spotlight mount the
+  // instant a share is published, which forces the subscription.
   const screenShareTracks = tracks.filter(
-    (t) => t.publication?.source === Track.Source.ScreenShare && t.publication?.track,
+    (t) => t.publication?.source === Track.Source.ScreenShare,
   );
   const cameraTracks = tracks.filter(
     (t) => t.publication?.source !== Track.Source.ScreenShare,
@@ -219,6 +225,13 @@ function GroupCallContent() {
   const focusTrack = pinnedCameraTrack || screenShareTracks[0];
   // True only when the focus comes from a real screen-share publication
   const focusIsScreenShare = !pinnedCameraTrack && !!screenShareTracks[0];
+  // When the focused screen-share is OUR OWN, we must NOT render the live feed
+  // back to ourselves — capturing the screen that shows the feed creates an
+  // infinite hall-of-mirrors loop. Instead we show the OTHER participants in a
+  // grid (Meet/Teams behaviour — see the render branch below). Remote viewers
+  // still see the live share.
+  const focusIsOwnScreenShare =
+    focusIsScreenShare && !!(focusTrack as any)?.participant?.isLocal;
 
   const carouselTracks = focusTrack
     ? tracks.filter((t) => t !== focusTrack)
@@ -484,7 +497,32 @@ function GroupCallContent() {
       <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
         {/* Position:relative so <ReactionsLayer> can overlay the entire main video area */}
         <div style={{ flex: 1, padding: 16, minWidth: 0, position: 'relative' }}>
-          {focusTrack ? (
+          {focusIsOwnScreenShare ? (
+            // ── I'm presenting (Google Meet / Teams style) ──
+            // Show the OTHER participants in a grid so I can still see who's in
+            // the meeting while I present. My OWN shared screen is intentionally
+            // NOT rendered back to me — capturing the screen that displays it is
+            // what created the infinite hall-of-mirrors loop. Everyone else still
+            // sees my live screen share in their spotlight.
+            <div style={{ height: '100%', position: 'relative' }}>
+              <div
+                style={{
+                  position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)',
+                  zIndex: 5, padding: '6px 14px', borderRadius: 999,
+                  background: 'rgba(98, 100, 167, 0.92)', color: '#fff',
+                  fontSize: 12, fontWeight: 600,
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  backdropFilter: 'blur(6px)', boxShadow: '0 4px 12px rgba(0,0,0,0.35)',
+                  pointerEvents: 'none',
+                }}
+              >
+                <ScreenShare size={13} /> You're presenting your screen
+              </div>
+              <GridLayout tracks={cameraTracks} style={{ height: '100%' }}>
+                <ParticipantTileWithHand />
+              </GridLayout>
+            </div>
+          ) : focusTrack ? (
             // ── Teams-style spotlight ──
             // The shared screen takes the main area (left, fills available width).
             // Camera tiles stack vertically in a fixed-width sidebar (right).
@@ -513,7 +551,7 @@ function GroupCallContent() {
 
                 {/* Status banner over the spotlight — "X is presenting" for screen share,
                     or "Pinned: X" for a pinned camera. Mutually exclusive with each other. */}
-                {focusIsScreenShare ? (
+                {focusIsScreenShare && !focusIsOwnScreenShare ? (
                   <div
                     style={{
                       position: 'absolute', top: 12, left: 12,
