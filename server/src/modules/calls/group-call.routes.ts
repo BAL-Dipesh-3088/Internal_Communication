@@ -19,6 +19,7 @@ import { query } from '../../database/connection';
 import { randomUUID } from 'crypto';
 import * as livekit from '../../services/livekit.service';
 import { getIO } from '../../services/socket.service';
+import { startMeetingNotesRecording } from '../ai/meeting-notes.service';
 
 const router = Router();
 router.use(authMiddleware);
@@ -318,7 +319,7 @@ router.post('/:callId/title', async (req: AuthRequest, res: Response) => {
 // Returns: { callId, livekit: { wsUrl, token, roomName } }
 router.post('/start', async (req: AuthRequest, res: Response) => {
   try {
-    const { conversationId, callType } = req.body || {};
+    const { conversationId, callType, transcribe } = req.body || {};
     if (!conversationId) return res.status(400).json({ error: 'conversationId required' });
     if (callType !== 'audio' && callType !== 'video') {
       return res.status(400).json({ error: 'callType must be "audio" or "video"' });
@@ -362,8 +363,8 @@ router.post('/start', async (req: AuthRequest, res: Response) => {
     await query(
       `INSERT INTO call_history (
          id, caller_id, conversation_id, call_type, is_group_call, status,
-         participants, livekit_room_name, host_user_id, started_at
-       ) VALUES ($1, $2, $3, $4, TRUE, 'ringing', $5, $6, $2, NOW())`,
+         participants, livekit_room_name, host_user_id, transcribe_enabled, started_at
+       ) VALUES ($1, $2, $3, $4, TRUE, 'ringing', $5, $6, $2, $7, NOW())`,
       [
         callId,
         hostId,
@@ -371,6 +372,7 @@ router.post('/start', async (req: AuthRequest, res: Response) => {
         callType,
         JSON.stringify([{ userId: hostId, displayName: hostName, joinedAt: new Date().toISOString() }]),
         roomName,
+        transcribe === true,
       ],
     );
 
@@ -402,6 +404,14 @@ router.post('/start', async (req: AuthRequest, res: Response) => {
 
     console.log(`[GroupCall] ${hostName} started ${callType} call in ${conversationId} (room=${roomName})`);
 
+    // AI Meeting Notes — opt-in by the host at start. Fire-and-forget: starts the
+    // audio egress + creates the notes row. The egress_ended webhook later runs
+    // transcription → summary → email. Never blocks/breaks the call.
+    if (transcribe === true) {
+      startMeetingNotesRecording({ callId, conversationId, roomName, hostId })
+        .catch((e) => console.error('[MeetingNotes] start error:', e.message));
+    }
+
     return res.json({
       callId,
       livekit: {
@@ -409,9 +419,29 @@ router.post('/start', async (req: AuthRequest, res: Response) => {
         token,
         roomName,
       },
+      transcribe: transcribe === true,
     });
   } catch (err: any) {
     console.error('[GroupCall] start error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ------------------------------------------------------------------
+// GET /api/calls/group/notes/:callId — fetch AI meeting notes for a meeting.
+// Returns the latest meeting_notes row (status + summary/decisions/actions).
+// ------------------------------------------------------------------
+router.get('/notes/:callId', async (req: AuthRequest, res: Response) => {
+  try {
+    const result = await query(
+      `SELECT id, call_id, conversation_id, room_name, title, status, summary,
+              decisions, action_items, attendees, error, created_at, completed_at
+         FROM meeting_notes WHERE call_id = $1 ORDER BY created_at DESC LIMIT 1`,
+      [req.params.callId],
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'No notes for this meeting' });
+    res.json({ notes: result.rows[0] });
+  } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
@@ -516,7 +546,8 @@ router.post('/:callId/join', async (req: AuthRequest, res: Response) => {
     const userId = req.user!.userId;
 
     const callR = await query(
-      `SELECT id, conversation_id, livekit_room_name, status, is_group_call, host_user_id, participants
+      `SELECT id, conversation_id, livekit_room_name, status, is_group_call, host_user_id,
+              participants, transcribe_enabled, calendar_event_id
          FROM call_history WHERE id = $1`,
       [callId],
     );
@@ -593,6 +624,20 @@ router.post('/:callId/join', async (req: AuthRequest, res: Response) => {
       userId,
       displayName,
     });
+
+    // AI meeting notes for SCHEDULED meetings: the room is lazy-created on the
+    // first join, so start egress here (idempotent — only the first joiner of a
+    // transcribe-enabled meeting actually triggers it; instant group calls start
+    // egress at /start instead). Fire-and-forget so it never blocks the join.
+    if (call.transcribe_enabled) {
+      startMeetingNotesRecording({
+        callId,
+        conversationId: call.conversation_id,
+        roomName: call.livekit_room_name,
+        hostId: call.host_user_id || userId,
+        calendarEventId: call.calendar_event_id || null,
+      }).catch((e) => console.error('[MeetingNotes] join-start error:', e.message));
+    }
 
     return res.json({
       livekit: {

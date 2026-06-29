@@ -1,10 +1,11 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { Send, Paperclip, Smile, X, Image, CornerDownRight, Plus, Mic, Square, Play, Pause, Trash2 } from 'lucide-react';
+import { Send, Paperclip, Smile, X, Image, CornerDownRight, Plus, Mic, Square, Play, Pause, Trash2, Sparkles, Loader2, Undo2 } from 'lucide-react';
 import EmojiPickerReact, { Theme, Categories, EmojiStyle } from 'emoji-picker-react';
 import { getSocket } from '@/services/socket';
 import { useAuthStore } from '@/stores/authStore';
 import { useChatStore } from '@/stores/chatStore';
 import api from '@/services/api';
+import { aiRewrite, aiSuggestReplies, REWRITE_MODES, type RewriteMode } from '@/services/ai';
 import MentionDropdown, { getMentionFilteredCount, getMentionItemAtIndex } from './MentionDropdown';
 import type { Message, MentionData, ConversationMember } from '@/types';
 
@@ -44,9 +45,19 @@ export default function MessageInput({ conversationId, replyTo, onClearReply }: 
   const audioChunksRef = useRef<Blob[]>([]);
   const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+  // ── AI: Smart Compose (rewrite) + Smart Reply state ──
+  const [showAiMenu, setShowAiMenu] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiUndo, setAiUndo] = useState<string | null>(null);   // pre-rewrite snapshot
+  const [quickReplies, setQuickReplies] = useState<string[]>([]);
+  const [quickRepliesLoading, setQuickRepliesLoading] = useState(false);
+  const aiMenuRef = useRef<HTMLDivElement>(null);
+  const lastSuggestedMsgIdRef = useRef<string | null>(null);
   const { user } = useAuthStore();
   const { addMessage, updateMessageStatus } = useChatStore();
   const activeConversation = useChatStore((s) => s.activeConversation);
+  const convMessages = useChatStore((s) => s.messages[conversationId]);
   const mentionMembers = (activeConversation?.members || []).filter((m) => m.user_id !== user?.id);
 
   // Focus textarea when reply is set
@@ -78,6 +89,84 @@ export default function MessageInput({ conversationId, replyTo, onClearReply }: 
     if (showMentions) document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showMentions]);
+
+  // Close the AI rewrite menu on click outside
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      if (aiMenuRef.current && !aiMenuRef.current.contains(e.target as Node)) setShowAiMenu(false);
+    };
+    if (showAiMenu) document.addEventListener('mousedown', onClick);
+    return () => document.removeEventListener('mousedown', onClick);
+  }, [showAiMenu]);
+
+  // ── Smart Reply: when the newest message is from the OTHER person, ask the
+  // LLM for 3 quick replies. Generated once per message id (no spam), and only
+  // for normal text messages. Failures are silent — chips just don't appear.
+  useEffect(() => {
+    const msgs = convMessages || [];
+    const last = msgs.length > 0 ? msgs[msgs.length - 1] : null;
+    if (!last || last.sender_id === user?.id || last.type === 'system' || last.is_deleted || !last.content?.trim()) {
+      setQuickReplies([]);
+      return;
+    }
+    if (lastSuggestedMsgIdRef.current === last.id) return;
+    lastSuggestedMsgIdRef.current = last.id;
+
+    // Map to chat roles: the other party = "user" (speaking to us), our own
+    // messages = "assistant" (so the model continues as US for the next line).
+    const ctx = msgs
+      .slice(-6)
+      .map((m) => ({
+        role: (m.sender_id === user?.id ? 'assistant' : 'user') as 'user' | 'assistant',
+        content: (m.content || '').trim(),
+      }))
+      .filter((m) => m.content);
+    if (ctx.length === 0) { setQuickReplies([]); return; }
+
+    setQuickRepliesLoading(true);
+    setQuickReplies([]);
+    aiSuggestReplies(ctx)
+      .then((r) => setQuickReplies(r))
+      .catch(() => setQuickReplies([]))
+      .finally(() => setQuickRepliesLoading(false));
+  }, [convMessages, user?.id]);
+
+  // ── Smart Compose: rewrite the current draft in the chosen style ──
+  const handleRewrite = async (mode: RewriteMode) => {
+    const current = text.trim();
+    if (!current || aiBusy) return;
+    setShowAiMenu(false);
+    setAiBusy(true);
+    setAiError(null);
+    try {
+      const result = await aiRewrite(current, mode);
+      if (result) {
+        setAiUndo(text);          // snapshot so the user can revert
+        setText(result);
+        setTimeout(() => textareaRef.current?.focus(), 0);
+      }
+    } catch (err: any) {
+      setAiError(err?.response?.data?.error || 'AI is unavailable right now');
+      setTimeout(() => setAiError(null), 4000);
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
+  const handleAiUndo = () => {
+    if (aiUndo !== null) {
+      setText(aiUndo);
+      setAiUndo(null);
+      setTimeout(() => textareaRef.current?.focus(), 0);
+    }
+  };
+
+  // Insert a suggested quick reply into the composer (user can edit, then Enter).
+  const useQuickReply = (reply: string) => {
+    setText(reply);
+    setQuickReplies([]);
+    setTimeout(() => textareaRef.current?.focus(), 0);
+  };
 
   // Detect @mention trigger in text
   const detectMention = useCallback((value: string, cursorPos: number) => {
@@ -414,6 +503,8 @@ export default function MessageInput({ conversationId, replyTo, onClearReply }: 
       setText('');
       setFiles([]);
       setPendingMentions([]);
+      setAiUndo(null);
+      setQuickReplies([]);
       onClearReply?.();
       textareaRef.current?.focus();
       if (textareaRef.current) {
@@ -681,6 +772,38 @@ export default function MessageInput({ conversationId, replyTo, onClearReply }: 
         </div>
       )}
 
+      {/* Smart Reply chips — AI suggestions for the latest incoming message */}
+      {!isRecording && !audioBlob && (quickRepliesLoading || quickReplies.length > 0) && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#8B8CA7', fontWeight: 600 }}>
+            <Sparkles size={12} color="#6264A7" /> Smart replies
+          </span>
+          {quickRepliesLoading && quickReplies.length === 0 && (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#A19F9D' }}>
+              <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> thinking…
+            </span>
+          )}
+          {quickReplies.map((r, i) => (
+            <button
+              key={i}
+              onClick={() => useQuickReply(r)}
+              title={r}
+              style={{
+                padding: '6px 12px', borderRadius: 16, border: '1px solid #D8D6F5',
+                background: '#F3F2FA', color: '#4338CA', fontSize: 13, cursor: 'pointer',
+                fontFamily: 'inherit', maxWidth: 340, overflow: 'hidden',
+                textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = '#E8E6F5'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = '#F3F2FA'; }}
+            >
+              {r}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Normal Compose box (hidden during recording/preview) */}
       {!isRecording && !audioBlob && (
         <div
@@ -922,6 +1045,47 @@ export default function MessageInput({ conversationId, replyTo, onClearReply }: 
                 title="Record voice message"
                 onClick={startRecording}
               />
+
+              {/* AI Smart Compose — rewrite the current draft */}
+              <div style={{ position: 'relative' }} ref={aiMenuRef}>
+                <ToolbarButton
+                  icon={aiBusy
+                    ? <Loader2 size={18} style={{ animation: 'spin 1s linear infinite' }} />
+                    : <Sparkles size={18} color={text.trim() ? '#6264A7' : undefined} />}
+                  title={text.trim() ? 'AI — rewrite your draft' : 'Type something first, then rewrite with AI'}
+                  onClick={() => { if (!aiBusy && text.trim()) setShowAiMenu((v) => !v); }}
+                />
+                {showAiMenu && (
+                  <div
+                    style={{
+                      position: 'absolute', bottom: 42, left: -8, background: '#fff',
+                      border: '1px solid #E1DFDD', borderRadius: 10,
+                      boxShadow: '0 8px 28px rgba(0,0,0,0.16)', padding: 6, zIndex: 100,
+                      width: 'max-content', minWidth: 180,
+                    }}
+                  >
+                    <div style={{ fontSize: 10, fontWeight: 700, color: '#8B8CA7', textTransform: 'uppercase', letterSpacing: 0.4, padding: '4px 10px 6px' }}>
+                      Rewrite with AI
+                    </div>
+                    {REWRITE_MODES.map(({ mode, label }) => (
+                      <button
+                        key={mode}
+                        onClick={() => handleRewrite(mode)}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+                          textAlign: 'left', padding: '8px 10px', border: 'none',
+                          background: 'transparent', borderRadius: 6, cursor: 'pointer',
+                          fontSize: 13, color: '#242424', fontFamily: 'inherit',
+                        }}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = '#F3F2FA'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                      >
+                        <Sparkles size={13} color="#6264A7" /> {label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Send button */}
@@ -957,6 +1121,25 @@ export default function MessageInput({ conversationId, replyTo, onClearReply }: 
               <Send size={16} />
             </button>
           </div>
+        </div>
+      )}
+
+      {/* AI status: rewrite error or undo affordance */}
+      {(aiError || aiUndo !== null) && (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginTop: 6 }}>
+          {aiError && <span style={{ fontSize: 11, color: '#D13438' }}>{aiError}</span>}
+          {aiUndo !== null && !aiError && (
+            <button
+              onClick={handleAiUndo}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11,
+                color: '#6264A7', background: 'none', border: 'none', cursor: 'pointer',
+                fontFamily: 'inherit', fontWeight: 600,
+              }}
+            >
+              <Undo2 size={12} /> Undo AI rewrite
+            </button>
+          )}
         </div>
       )}
 

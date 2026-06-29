@@ -55,6 +55,9 @@ services:
     container_name: connecthub-livekit
     restart: unless-stopped
     command: --config /etc/livekit.yaml
+    depends_on:
+      redis:
+        condition: service_healthy
     ports:
       - "7880:7880"                # WebSocket signaling
       - "7881:7881"                # TCP RTC fallback
@@ -63,17 +66,54 @@ services:
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml:ro
 
+  # Self-hosted speech-to-text (CPU) — OpenAI-compatible /v1/audio/transcriptions.
+  # Used by the meeting-notes pipeline to transcribe egress recordings.
+  whisper:
+    image: fedirz/faster-whisper-server:latest-cpu
+    container_name: connecthub-whisper
+    restart: unless-stopped
+    environment:
+      # Preload the base model so the first transcription isn't a cold download.
+      WHISPER__MODEL: Systran/faster-whisper-base
+      WHISPER__INFERENCE_DEVICE: cpu
+    volumes:
+      - whisper_cache:/root/.cache/huggingface
+
+  # LiveKit Egress — records meeting audio (opt-in) to the shared volume, then
+  # fires the egress_ended webhook the app listens for. Talks to livekit via redis.
+  egress:
+    image: livekit/egress:latest
+    container_name: connecthub-egress
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      livekit:
+        condition: service_started
+    environment:
+      EGRESS_CONFIG_FILE: /etc/egress.yaml
+    # Chrome (used by the compositor) needs SYS_ADMIN for its sandbox.
+    cap_add:
+      - SYS_ADMIN
+    volumes:
+      - ./egress.yaml:/etc/egress.yaml:ro
+      - egress_output:/egress-out
+
   app:
     build: .
     image: bal-connect-app
     container_name: connecthub-app
     restart: unless-stopped
+    env_file:
+      - ./server/.env
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
       livekit:
+        condition: service_started
+      whisper:
         condition: service_started
     environment:
       NODE_ENV: production
@@ -124,8 +164,18 @@ services:
       LIVEKIT_WS_URL: ws://192.168.10.15:7880
       # HTTP URL used by the backend container (internal Docker network)
       LIVEKIT_HTTP_URL: http://livekit:7880
+      # ── AI (Smart Compose / Translate / Meeting Notes) ──
+      BAL_AI_BASE_URL: https://chat.balasorealloys.in/v1
+      BAL_AI_MODEL: qwen3-32b
+      # BAL_AI_KEY is supplied via server/.env (env_file) — never inline in git.
+      # ── Meeting transcription (self-hosted faster-whisper + LiveKit egress) ──
+      WHISPER_URL: http://whisper:8000
+      WHISPER_MODEL: Systran/faster-whisper-base
+      EGRESS_OUTPUT_DIR: /egress-out
     volumes:
       - app_data:/app/data
+      # Read access to the meeting recordings that egress writes.
+      - egress_output:/egress-out:ro
 
   nginx:
     image: nginx:1.24-alpine
@@ -153,3 +203,6 @@ volumes:
   app_data:
     external: true
     name: bal-connect_app_data
+  # Meeting recordings written by egress, read by app. Auto-created (not external).
+  egress_output:
+  whisper_cache:

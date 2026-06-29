@@ -131,7 +131,7 @@ interface CallState {
   dismissIncoming: () => void;
 
   // Group call actions (LiveKit-backed)
-  startGroupCall: (conversationId: string, callType: CallType, groupName?: string) => Promise<void>;
+  startGroupCall: (conversationId: string, callType: CallType, groupName?: string, transcribe?: boolean) => Promise<void>;
   // Teams-style escalation: turn the active 1:1 WebRTC call into a LiveKit group
   // call and add `inviteeUserId`. The existing peer auto-transitions.
   escalateToGroup: (inviteeUserId: string) => Promise<void>;
@@ -380,9 +380,9 @@ export const useCallStore = create<CallState>((set, get) => {
 
     // ─── Group call actions (LiveKit-backed) ──────────────────────────────
 
-    startGroupCall: async (conversationId, callType, groupName = '') => {
+    startGroupCall: async (conversationId, callType, groupName = '', transcribe = false) => {
       try {
-        const result = await livekitApi.startGroupCall(conversationId, callType);
+        const result = await livekitApi.startGroupCall(conversationId, callType, transcribe);
         set({
           groupCall: {
             isActive: true,

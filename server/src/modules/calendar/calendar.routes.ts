@@ -177,6 +177,7 @@ router.post('/events', async (req: AuthRequest, res: Response) => {
       title, description, start_time, end_time, is_all_day, location, color, attendee_ids,
       is_online_meeting, // NEW — Teams-style toggle
       reminder_minutes,  // NEW — Teams-style reminder lead time (0 = none)
+      auto_notes,        // NEW — opt-in AI meeting notes (transcript+summary email)
     } = req.body;
 
     if (!title?.trim()) return res.status(400).json({ error: 'Title is required' });
@@ -208,14 +209,15 @@ router.post('/events', async (req: AuthRequest, res: Response) => {
       await client.query(
         `INSERT INTO call_history (
             id, caller_id, host_user_id, call_type, is_group_call, status,
-            participants, livekit_room_name, calendar_event_id, started_at
-          ) VALUES ($1, $2, $2, 'video', TRUE, 'scheduled', $3, $4, $5, $6)`,
+            participants, livekit_room_name, calendar_event_id, transcribe_enabled, started_at
+          ) VALUES ($1, $2, $2, 'video', TRUE, 'scheduled', $3, $4, $5, $6, $7)`,
         [
           livekitCallId,
           userId,
           JSON.stringify([]), // host added on first join via /join flow
           roomName,
           event.id,
+          !!auto_notes,
           start_time,
         ],
       );

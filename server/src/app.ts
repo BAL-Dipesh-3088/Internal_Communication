@@ -23,6 +23,8 @@ import callRoutes from './modules/calls/calls.routes';
 import adminRoutes from './modules/admin/admin.routes';
 import emailRoutes from './modules/email/email.routes';
 import calendarRoutes from './modules/calendar/calendar.routes';
+import aiRoutes from './modules/ai/ai.routes';
+import livekitWebhookRoutes from './modules/calls/livekit-webhook.routes';
 
 async function bootstrap() {
   console.log('\n=== ConnectHub Server ===\n');
@@ -119,6 +121,11 @@ async function bootstrap() {
   app.use('/api/admin', adminRoutes);
   app.use('/api/email', emailRoutes);
   app.use('/api/calendar', calendarRoutes);
+  app.use('/api/ai', aiRoutes);
+  // LiveKit egress webhooks (no user auth — validated by signature). Raw body
+  // parser lives inside the route, so it must be reachable before any json-only
+  // assumptions; mounting here is fine since each router sets its own parser.
+  app.use('/api/livekit', livekitWebhookRoutes);
 
   // Serve React client build in production
   if (process.env.NODE_ENV === 'production') {

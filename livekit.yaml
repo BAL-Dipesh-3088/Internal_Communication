@@ -13,6 +13,20 @@ bind_addresses:
 # Logging
 log_level: info
 
+# Redis — required so livekit-server can dispatch jobs to the Egress service
+# (meeting recording for AI notes). Must match the redis container's password.
+redis:
+  address: redis:6379
+  password: connecthub_redis_prod_2026
+
+# Webhooks — livekit-server POSTs lifecycle events here. We listen for
+# `egress_ended` to start the transcribe → summarize → email pipeline.
+# Signed with the api_key below (validated server-side by WebhookReceiver).
+webhook:
+  api_key: devkey_local
+  urls:
+    - http://app:3000/api/livekit/webhook
+
 # RTC config — media transport (PRODUCTION — native Linux Docker)
 # On Linux, Docker uses real iptables bridging. UDP forwarding works correctly
 # (unlike Docker Desktop on Windows where WSL2 NAT breaks WebRTC DTLS).

@@ -261,6 +261,13 @@ export default function AppLayout() {
       });
     };
 
+    // Someone read up to a message → update the "Seen" indicator on our messages.
+    const onMessageRead = (data: any) => {
+      const { conversationId, userId, messageId, sequence, readAt } = data || {};
+      if (!conversationId || !userId || userId === user?.id) return;
+      useChatStore.getState().applyRead(conversationId, userId, messageId, sequence ?? null, readAt);
+    };
+
     // Listen for reaction events
     const onMessageReaction = (data: any) => {
       const { messageId, userId, username, emoji, action } = data;
@@ -332,6 +339,7 @@ export default function AppLayout() {
     socket.on('message:updated', onMessageEdited);
     socket.on('message:deleted', onMessageDeleted);
     socket.on('message:reaction', onMessageReaction);
+    socket.on('message:read', onMessageRead);
     socket.on('typing:start', onTypingStart);
     socket.on('typing:stop', onTypingStop);
     socket.on('conversation:created', onConversationCreated);
@@ -364,6 +372,7 @@ export default function AppLayout() {
       socket.off('message:updated', onMessageEdited);
       socket.off('message:deleted', onMessageDeleted);
       socket.off('message:reaction', onMessageReaction);
+      socket.off('message:read', onMessageRead);
       socket.off('typing:start', onTypingStart);
       socket.off('typing:stop', onTypingStop);
       socket.off('conversation:created', onConversationCreated);

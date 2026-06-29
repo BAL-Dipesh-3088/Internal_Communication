@@ -17,12 +17,17 @@ import {
   RoomServiceClient,
   Room,
   ParticipantInfo,
+  EgressClient,
+  EncodedFileOutput,
+  EncodedFileType,
 } from 'livekit-server-sdk';
 
 const WS_URL = process.env.LIVEKIT_WS_URL || 'ws://192.168.10.15:7880';
 const HTTP_URL = process.env.LIVEKIT_HTTP_URL || 'http://192.168.10.15:7880';
 const API_KEY = process.env.LIVEKIT_API_KEY || '';
 const API_SECRET = process.env.LIVEKIT_API_SECRET || '';
+// Where LiveKit Egress writes recordings (a volume shared with the app container).
+const EGRESS_OUTPUT_DIR = process.env.EGRESS_OUTPUT_DIR || '/egress-out';
 
 if (!API_KEY || !API_SECRET) {
   console.warn('[LiveKit] LIVEKIT_API_KEY / LIVEKIT_API_SECRET not set — group calls will fail');
@@ -31,6 +36,7 @@ if (!API_KEY || !API_SECRET) {
 }
 
 const roomService = new RoomServiceClient(HTTP_URL, API_KEY, API_SECRET);
+const egressClient = new EgressClient(HTTP_URL, API_KEY, API_SECRET);
 
 export interface MintTokenOptions {
   roomName: string;
@@ -168,6 +174,43 @@ export async function muteParticipantAudio(roomName: string, identity: string, m
   const audioTrack = target.tracks.find((t) => t.type === 0); // 0 = AUDIO in proto enum
   if (!audioTrack) throw new Error(`Participant ${identity} has no audio track`);
   await roomService.mutePublishedTrack(roomName, identity, audioTrack.sid, muted);
+}
+
+// ─── Egress (meeting recording for AI notes) ────────────────────────────────
+
+/**
+ * Start an AUDIO-ONLY room-composite egress for a meeting that opted into AI
+ * notes. Writes a single OGG/Opus file to the shared egress volume. Audio-only
+ * keeps it light (no headless-Chrome video compositing of camera tiles).
+ *
+ * Returns the egress id + the output filepath, or null on failure (the meeting
+ * itself must never break because recording couldn't start).
+ */
+export async function startMeetingAudioEgress(
+  roomName: string,
+): Promise<{ egressId: string; filepath: string } | null> {
+  try {
+    const filepath = `${EGRESS_OUTPUT_DIR}/${roomName}-${Date.now()}.ogg`;
+    const fileOutput = new EncodedFileOutput({
+      fileType: EncodedFileType.OGG,
+      filepath,
+    });
+    const info = await egressClient.startRoomCompositeEgress(roomName, fileOutput, { audioOnly: true });
+    console.log(`[Egress] started for room ${roomName} → ${filepath} (egressId=${info.egressId})`);
+    return { egressId: info.egressId, filepath };
+  } catch (err: any) {
+    console.error('[Egress] start failed:', err.message);
+    return null;
+  }
+}
+
+/** Stop an in-progress egress (e.g. when the host ends the meeting). */
+export async function stopMeetingEgress(egressId: string): Promise<void> {
+  try {
+    await egressClient.stopEgress(egressId);
+  } catch (err: any) {
+    console.warn('[Egress] stop failed (may have already ended):', err.message);
+  }
 }
 
 /**

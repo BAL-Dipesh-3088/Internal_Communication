@@ -336,10 +336,22 @@ async function handleMessageRead(socket: AuthenticatedSocket, user: AuthPayload,
       [data.messageId, data.conversationId, user.userId]
     );
 
+    // Look up the read message's sequence_number so the "Seen" indicator on the
+    // sender's side can compare reliably (sequence is monotonic per conversation,
+    // unlike timestamps). The sender's client uses this to mark every own message
+    // up to this sequence as seen by this reader.
+    const seqRes = await query(
+      'SELECT sequence_number FROM messages WHERE id = $1',
+      [data.messageId]
+    );
+    const sequence = seqRes.rows[0]?.sequence_number ?? null;
+
     socket.to(`conv:${data.conversationId}`).emit('message:read', {
       conversationId: data.conversationId,
       userId: user.userId,
       messageId: data.messageId,
+      sequence,
+      readAt: new Date().toISOString(),
     });
   } catch (err: any) {
     console.error('[WS] read error:', err.message);

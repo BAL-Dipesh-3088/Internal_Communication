@@ -386,6 +386,42 @@ router.get('/:id/messages', authMiddleware, async (req: AuthRequest, res: Respon
   }
 });
 
+// GET /api/conversations/:id/read-state — read receipts for the "Seen" indicator.
+// Returns, for every OTHER member, how far they have read (last_read_message_id +
+// that message's sequence_number). The sender's client uses this to show a "Seen"
+// eye under their latest message that the recipient(s) have read — including
+// messages read BEFORE the sender opened the chat (live updates come via the
+// `message:read` socket broadcast).
+router.get('/:id/read-state', authMiddleware, async (req: AuthRequest, res: Response) => {
+  try {
+    // Verify membership (admin can view all)
+    if (req.user!.role !== 'admin') {
+      const memberCheck = await query(
+        'SELECT 1 FROM conversation_members WHERE conversation_id = $1 AND user_id = $2',
+        [req.params.id, req.user!.userId]
+      );
+      if (memberCheck.rows.length === 0) {
+        return res.status(403).json({ error: 'Not a member' });
+      }
+    }
+
+    const result = await query(
+      `SELECT cm.user_id, cm.last_read_message_id, cm.last_read_at,
+              u.display_name, u.username,
+              rm.sequence_number AS last_read_sequence
+       FROM conversation_members cm
+       JOIN users u ON u.id = cm.user_id
+       LEFT JOIN messages rm ON rm.id = cm.last_read_message_id
+       WHERE cm.conversation_id = $1 AND cm.user_id != $2`,
+      [req.params.id, req.user!.userId]
+    );
+
+    res.json({ readState: result.rows });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/conversations/:id/messages — Send message (HTTP fallback, primary is Socket.IO)
 router.post('/:id/messages', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {

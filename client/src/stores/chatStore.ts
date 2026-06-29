@@ -32,6 +32,19 @@ function normalizeMessage(raw: any): Message {
   };
 }
 
+/** How far one member has read in a conversation (for the "Seen" indicator). */
+export interface ReadEntry {
+  /** The last message id this member has read. */
+  messageId: string | null;
+  /** sequence_number of that message — monotonic per conversation, used for
+   *  reliable "is this message seen?" comparison (timestamps can tie/skew). */
+  sequence: number | null;
+  /** When they last read (ISO). */
+  at: string | null;
+  /** Display name (for the "Seen by X" tooltip in group chats). */
+  name?: string;
+}
+
 interface ChatState {
   conversations: Conversation[];
   activeConversation: Conversation | null;
@@ -40,6 +53,8 @@ interface ChatState {
   isLoadingConversations: boolean;
   isLoadingMessages: boolean;
   hasMoreMessages: Record<string, boolean>;
+  /** Per-conversation read receipts keyed by readerId → how far they've read. */
+  readState: Record<string, Record<string, ReadEntry>>;
 
   fetchConversations: () => Promise<void>;
   setActiveConversation: (conv: Conversation | null) => void;
@@ -55,6 +70,11 @@ interface ChatState {
   updateUnreadCount: (conversationId: string, count: number) => void;
   addReaction: (conversationId: string, messageId: string, userId: string, username: string, emoji: string) => void;
   removeReaction: (conversationId: string, messageId: string, userId: string, emoji: string) => void;
+  /** Load existing read receipts for a conversation (so "Seen" shows for messages
+   *  read before this chat was opened, not just live ones). */
+  fetchReadState: (conversationId: string) => Promise<void>;
+  /** Apply a single live read receipt (from the `message:read` socket broadcast). */
+  applyRead: (conversationId: string, userId: string, messageId: string, sequence: number | null, at?: string, name?: string) => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -65,6 +85,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   isLoadingConversations: false,
   isLoadingMessages: false,
   hasMoreMessages: {},
+  readState: {},
 
   fetchConversations: async () => {
     set({ isLoadingConversations: true });
@@ -95,6 +116,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
           messageId: lastMsg.id,
         });
       }
+
+      // Load existing read receipts so the "Seen" indicator is correct for
+      // messages read before we opened this chat (live updates arrive via socket).
+      get().fetchReadState(conv.id);
     }
   },
 
@@ -317,6 +342,50 @@ export const useChatStore = create<ChatState>((set, get) => ({
         [conversationId]: existing.map((m) =>
           m.client_id === clientId ? { ...m, ...updates } : m
         ),
+      },
+    });
+  },
+
+  fetchReadState: async (conversationId) => {
+    try {
+      const { data } = await api.get(`/conversations/${conversationId}/read-state`);
+      const rows: any[] = data.readState || data || [];
+      const map: Record<string, ReadEntry> = {};
+      for (const r of rows) {
+        map[r.user_id] = {
+          messageId: r.last_read_message_id ?? null,
+          sequence: r.last_read_sequence != null ? Number(r.last_read_sequence) : null,
+          at: r.last_read_at ?? null,
+          name: r.display_name || r.username || undefined,
+        };
+      }
+      set({ readState: { ...get().readState, [conversationId]: map } });
+    } catch (err) {
+      // Non-fatal — the indicator just won't show historical reads.
+      console.error('Failed to fetch read state:', err);
+    }
+  },
+
+  applyRead: (conversationId, userId, messageId, sequence, at, name) => {
+    const convReads = get().readState[conversationId] || {};
+    const prev = convReads[userId];
+    // Read state only ever moves forward — ignore an out-of-order/stale event
+    // (e.g. a late socket message for an earlier sequence).
+    if (prev && prev.sequence != null && sequence != null && sequence < prev.sequence) {
+      return;
+    }
+    set({
+      readState: {
+        ...get().readState,
+        [conversationId]: {
+          ...convReads,
+          [userId]: {
+            messageId,
+            sequence: sequence != null ? Number(sequence) : (prev?.sequence ?? null),
+            at: at ?? new Date().toISOString(),
+            name: name ?? prev?.name,
+          },
+        },
       },
     });
   },

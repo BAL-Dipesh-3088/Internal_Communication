@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Phone, Video, X, Users } from 'lucide-react';
+import { Phone, Video, X, Users, FileText, Check } from 'lucide-react';
 import type { Conversation } from '@/types';
 
 const AVATAR_COLORS = [
@@ -27,12 +27,14 @@ const STATUS_COLORS: Record<string, string> = {
 interface Props {
   conversation: Conversation;
   initialCallType: 'audio' | 'video';
-  onConfirm: (type: 'audio' | 'video') => void;
+  onConfirm: (type: 'audio' | 'video', transcribe: boolean) => void;
   onClose: () => void;
 }
 
 export default function CallDialog({ conversation: conv, initialCallType, onConfirm, onClose }: Props) {
   const [hoveredBtn, setHoveredBtn] = useState<string | null>(null);
+  // AI meeting notes — opt-in by the meeting starter (group meetings only).
+  const [transcribe, setTranscribe] = useState(false);
 
   const isDirect = conv.type === 'direct';
   const otherUser = conv.other_user;
@@ -143,12 +145,47 @@ export default function CallDialog({ conversation: conv, initialCallType, onConf
           </div>
         )}
 
+        {/* AI meeting-notes opt-in — group meetings only */}
+        {!isDirect && canCall && (
+          <button
+            onClick={() => setTranscribe((v) => !v)}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 10, width: '100%',
+              padding: '10px 14px', marginBottom: 18, textAlign: 'left',
+              background: transcribe ? '#F3F2FA' : '#FAFAFC',
+              border: `1px solid ${transcribe ? '#6264A7' : '#E1DFDD'}`,
+              borderRadius: 10, cursor: 'pointer', fontFamily: 'inherit',
+              transition: 'all 0.12s',
+            }}
+          >
+            <span
+              style={{
+                width: 20, height: 20, borderRadius: 5, flexShrink: 0,
+                border: `1.5px solid ${transcribe ? '#6264A7' : '#C8C6C4'}`,
+                background: transcribe ? '#6264A7' : '#fff',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}
+            >
+              {transcribe && <Check size={14} color="#fff" />}
+            </span>
+            <FileText size={16} color="#6264A7" style={{ flexShrink: 0 }} />
+            <span style={{ flex: 1 }}>
+              <span style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#242424' }}>
+                Record AI meeting notes
+              </span>
+              <span style={{ display: 'block', fontSize: 11, color: '#8B8CA7', marginTop: 1 }}>
+                Transcript, summary & action items emailed to attendees afterward
+              </span>
+            </span>
+          </button>
+        )}
+
         {/* Action buttons */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 16 }}>
           {/* Audio Call */}
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
             <button
-              onClick={() => canCall && onConfirm('audio')}
+              onClick={() => canCall && onConfirm('audio', transcribe)}
               disabled={!canCall}
               onMouseEnter={() => setHoveredBtn('audio')}
               onMouseLeave={() => setHoveredBtn(null)}
@@ -172,7 +209,7 @@ export default function CallDialog({ conversation: conv, initialCallType, onConf
           {/* Video Call */}
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
             <button
-              onClick={() => canCall && onConfirm('video')}
+              onClick={() => canCall && onConfirm('video', transcribe)}
               disabled={!canCall}
               onMouseEnter={() => setHoveredBtn('video')}
               onMouseLeave={() => setHoveredBtn(null)}

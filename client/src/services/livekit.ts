@@ -29,8 +29,9 @@ export interface GroupCallJoinResponse {
 export async function startGroupCall(
   conversationId: string,
   callType: 'audio' | 'video',
+  transcribe = false,
 ): Promise<GroupCallStartResponse> {
-  const { data } = await api.post('/calls/group/start', { conversationId, callType });
+  const { data } = await api.post('/calls/group/start', { conversationId, callType, transcribe });
   return data;
 }
 

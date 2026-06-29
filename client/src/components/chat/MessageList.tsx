@@ -1,7 +1,8 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { format, isToday, isYesterday, isSameDay } from 'date-fns';
 import { Loader2 } from 'lucide-react';
 import type { Message } from '@/types';
+import { useChatStore } from '@/stores/chatStore';
 import MessageBubble from './MessageBubble';
 
 interface Props {
@@ -57,6 +58,44 @@ export default function MessageList({ conversationId, messages, isLoading, hasMo
       onLoadMore();
     }
   };
+
+  // ── "Seen" indicator (Teams-style) ────────────────────────────────────────
+  // Subscribe to this conversation's read receipts and compute the latest OWN
+  // message another member has read. Teams shows ONE marker that moves down as
+  // the reader progresses, so we tag only that single message.
+  const readState = useChatStore((s) => (conversationId ? s.readState[conversationId] : undefined));
+  const { lastSeenOwnId, seenTooltip, seenText } = useMemo(() => {
+    const empty = { lastSeenOwnId: null as string | null, seenTooltip: '', seenText: '' };
+    if (!readState || !currentUserId) return empty;
+    const readers = Object.values(readState);
+    if (readers.length === 0) return empty;
+    // Highest sequence anyone other than me has read up to.
+    const maxSeenSeq = readers.reduce((mx, r) => (r.sequence != null && r.sequence > mx ? r.sequence : mx), -1);
+    if (maxSeenSeq < 0) return empty;
+    // Bottom-most own, non-system message at or below that sequence.
+    let found: Message | null = null;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.sender_id === currentUserId && m.type !== 'system' && !m.is_deleted
+          && m.sequence_number != null && m.sequence_number <= maxSeenSeq) {
+        found = m;
+        break;
+      }
+    }
+    if (!found) return empty;
+    const seq = found.sequence_number!;
+    const seers = readers.filter((r) => r.sequence != null && r.sequence >= seq);
+    // 1:1 → just "Seen"; group → "Seen by N" with names in the tooltip.
+    if (readers.length <= 1) {
+      return { lastSeenOwnId: found.id, seenTooltip: 'Seen', seenText: '' };
+    }
+    const names = seers.map((r) => r.name).filter(Boolean).join(', ');
+    return {
+      lastSeenOwnId: found.id,
+      seenTooltip: names ? `Seen by ${names}` : `Seen by ${seers.length}`,
+      seenText: String(seers.length),
+    };
+  }, [readState, messages, currentUserId]);
 
   return (
     <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
@@ -125,6 +164,9 @@ export default function MessageList({ conversationId, messages, isLoading, hasMo
               isOwn={msg.sender_id === currentUserId}
               showAvatar={showAvatar}
               onReply={onReply}
+              seen={msg.id === lastSeenOwnId}
+              seenTooltip={seenTooltip}
+              seenText={seenText}
             />
           </div>
         );

@@ -139,7 +139,7 @@ export default function ChatWindow() {
     setShowCallDialog(true);
   };
 
-  const handleCallConfirm = (type: 'audio' | 'video') => {
+  const handleCallConfirm = (type: 'audio' | 'video', transcribe: boolean) => {
     setShowCallDialog(false);
     if (!conv) return;
 
@@ -152,9 +152,10 @@ export default function ChatWindow() {
       }
       useCallStore.getState().makeCall(targetUserId, type, conv.other_user?.display_name || conv.other_user?.username, conv.id);
     } else {
-      // Group call — backend mints LiveKit token and rings everyone via socket
+      // Group call — backend mints LiveKit token and rings everyone via socket.
+      // `transcribe` opts this meeting into AI notes (transcript + summary email).
       const groupName = conv.name || 'Group Call';
-      useCallStore.getState().startGroupCall(conv.id, type, groupName).catch((err) => {
+      useCallStore.getState().startGroupCall(conv.id, type, groupName, transcribe).catch((err) => {
         console.error('[ChatWindow] startGroupCall failed:', err);
       });
     }

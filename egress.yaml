@@ -1,0 +1,10 @@
+# LiveKit Egress config — records meeting audio for the AI meeting-notes feature.
+# Receives jobs from livekit-server via Redis; writes recordings to the shared
+# /egress-out volume (mounted read-only into the app container).
+log_level: info
+api_key: devkey_local
+api_secret: devsecret_local_at_least_32_characters_long_xx
+ws_url: ws://livekit:7880
+redis:
+  address: redis:6379
+  password: connecthub_redis_prod_2026

@@ -89,6 +89,9 @@ export default function CreateEventModal({ editingEvent, prefillTime, onClose, o
   // and the link gets displayed below the toggle (read-only after creation —
   // the meeting URL is the /meeting/<livekit_call_id> stable link).
   const [isOnlineMeeting, setIsOnlineMeeting] = useState(!!editingEvent?.is_online_meeting);
+  // Opt-in AI meeting notes (transcript → summary/decisions/action items emailed
+  // to attendees). Only meaningful for online meetings.
+  const [autoNotes, setAutoNotes] = useState<boolean>(!!(editingEvent as any)?.transcribe_enabled);
   const [reminderMinutes, setReminderMinutes] = useState<number>(
     editingEvent?.reminder_minutes ?? 15
   );
@@ -156,6 +159,8 @@ export default function CreateEventModal({ editingEvent, prefillTime, onClose, o
         attendee_ids: attendees.map(a => a.id),
         is_online_meeting: isOnlineMeeting,
         reminder_minutes: reminderMinutes,
+        // Only send auto-notes intent when this is actually an online meeting.
+        auto_notes: isOnlineMeeting && autoNotes,
       };
 
       if (editingEvent) {
@@ -293,6 +298,40 @@ export default function CreateEventModal({ editingEvent, prefillTime, onClose, o
               </button>
             </div>
           </div>
+
+          {/* AI meeting notes — only relevant for online meetings. Slides in when
+              "Online meeting" is enabled. The creator chooses per-meeting. */}
+          {isOnlineMeeting && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, paddingLeft: 24 }}>
+              <FileText size={16} color="#8B8CA7" style={{ flexShrink: 0 }} />
+              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: '#242424' }}>Auto-send meeting notes</div>
+                  <div style={{ fontSize: 11, color: '#8B8CA7', marginTop: 2 }}>
+                    Record the meeting and email a summary, decisions & action items to all attendees
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={autoNotes}
+                  onClick={() => setAutoNotes(v => !v)}
+                  style={{
+                    width: 42, height: 24, borderRadius: 999,
+                    background: autoNotes ? '#5B5FC7' : '#D0D0D0',
+                    border: 'none', cursor: 'pointer', position: 'relative',
+                    transition: 'background 0.15s', padding: 0, flexShrink: 0,
+                  }}
+                >
+                  <span style={{
+                    position: 'absolute', top: 2, left: autoNotes ? 20 : 2,
+                    width: 20, height: 20, borderRadius: '50%', background: '#fff',
+                    transition: 'left 0.15s', boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                  }} />
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Reminder — Teams-style "remind me N minutes before". */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>

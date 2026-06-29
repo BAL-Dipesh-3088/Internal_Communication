@@ -3,12 +3,13 @@ import {
   Mail, Send, Paperclip, Bold, Italic, Underline, Link2, Image,
   Reply, ReplyAll, Forward, Trash2, Archive, Star, StarOff,
   ChevronDown, Plus, Inbox, SendHorizontal, FileText, Users,
-  Search, MoreVertical, X, RefreshCw, Loader, Pin, PinOff,
+  Search, MoreVertical, X, RefreshCw, Loader, Pin, PinOff, Sparkles, Languages,
 } from 'lucide-react';
 import DOMPurify from 'dompurify';
 import { useAuthStore } from '@/stores/authStore';
 import api from '@/services/api';
 import { useMailStore } from '@/stores/mailStore';
+import { aiRewrite, aiTranslate, REWRITE_MODES, TRANSLATE_LANGS, type RewriteMode, type TranslateLang } from '@/services/ai';
 
 /* ===================================================================
    FOLDER DEFINITIONS — counts are fetched dynamically from API
@@ -1128,6 +1129,10 @@ function EmailReader({ email, onReply, onReplyAll, onForward, onDelete, onStar }
   const [threadEmails, setThreadEmails] = useState<any[]>([]);
   const [threadLoaded, setThreadLoaded] = useState(false);
   const [threadLoading, setThreadLoading] = useState(false);
+  // ── Inline translation of the email body ──
+  const [xlMenu, setXlMenu] = useState(false);
+  const [xlBusy, setXlBusy] = useState(false);
+  const [xlText, setXlText] = useState<{ lang: TranslateLang; text: string } | null>(null);
 
   // Parse the email body into individual message sections (fallback)
   const sections = useMemo(() => parseEmailSections(email.body || ''), [email.body]);
@@ -1143,9 +1148,29 @@ function EmailReader({ email, onReply, onReplyAll, onForward, onDelete, onStar }
   const olderMessages = threadLoaded && threadEmails.length > 0 ? threadEmails : parsedOlderMessages;
   const hasHistory = olderMessages.length > 0 || canLoadThread;
 
+  // Translate the latest message's body into the chosen language.
+  const handleEmailTranslate = async (lang: TranslateLang) => {
+    setXlMenu(false);
+    // Extract plain text from the main section HTML (no tags, decoded entities).
+    const tmp = document.createElement('div');
+    tmp.innerHTML = mainSection?.html || '';
+    const text = (tmp.innerText || tmp.textContent || '').trim();
+    if (!text) return;
+    setXlBusy(true);
+    try {
+      const result = await aiTranslate(text, lang);
+      setXlText({ lang, text: result });
+    } catch {
+      setXlText({ lang, text: '⚠️ Translation failed — please try again.' });
+    } finally {
+      setXlBusy(false);
+    }
+  };
+
   // Reset when email changes
   useEffect(() => {
     setShowHistory(false); setExpandedCards(new Set()); setThreadEmails([]); setThreadLoaded(false);
+    setXlMenu(false); setXlBusy(false); setXlText(null);
     // Diagnostic log: what threading info does the viewed email have?
     console.log('[READER] Viewing email — id=', email.id, 'subject=', email.subject, 'messageId=', email.messageId, 'inReplyTo=', email.inReplyTo, 'references=', email.references);
   }, [email.id]);
@@ -1304,6 +1329,12 @@ function EmailReader({ email, onReply, onReplyAll, onForward, onDelete, onStar }
         <ActionBtn icon={<ReplyAll size={16} />} label="Reply All" onClick={onReplyAll} />
         <ActionBtn icon={<Forward size={16} />} label="Forward" onClick={onForward} />
         <div style={{ width: 1, height: 20, background: '#E0E0E0', margin: '0 8px' }} />
+        <ActionBtn
+          icon={xlBusy ? <Loader size={16} style={{ animation: 'spin 1s linear infinite' }} /> : <Languages size={16} />}
+          label="Translate"
+          onClick={() => { if (!xlBusy) setXlMenu((v) => !v); }}
+        />
+        <div style={{ width: 1, height: 20, background: '#E0E0E0', margin: '0 8px' }} />
         <ActionBtn icon={<Trash2 size={16} />} label="Delete" onClick={onDelete} color="#D83B01" />
         <ActionBtn icon={<Archive size={16} />} label="Archive" onClick={() => {}} />
         <div style={{ flex: 1 }} />
@@ -1316,6 +1347,52 @@ function EmailReader({ email, onReply, onReplyAll, onForward, onDelete, onStar }
         <h2 style={{ fontSize: 20, fontWeight: 600, color: '#1A1A2E', margin: '0 0 16px', lineHeight: 1.3 }}>
           {email.subject}
         </h2>
+
+        {/* ── Inline translation (AI) ── */}
+        {xlMenu && (
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
+            <span style={{ fontSize: 12, color: '#8B8CA7', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              <Languages size={14} color="#6264A7" /> Translate this email to
+            </span>
+            {TRANSLATE_LANGS.map((l) => (
+              <button
+                key={l.lang}
+                onClick={() => handleEmailTranslate(l.lang)}
+                title={`Translate to ${l.label}`}
+                style={{
+                  padding: '5px 14px', borderRadius: 16, border: '1px solid #D8D6F5',
+                  background: '#F3F2FA', color: '#4338CA', fontSize: 13, cursor: 'pointer', fontFamily: 'inherit',
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = '#E8E6F5'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = '#F3F2FA'; }}
+              >
+                {l.native}
+              </button>
+            ))}
+            <button onClick={() => setXlMenu(false)} style={{ background: 'none', border: 'none', color: '#8B8CA7', cursor: 'pointer', fontSize: 12, fontFamily: 'inherit' }}>Cancel</button>
+          </div>
+        )}
+        {xlBusy && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, fontSize: 13, color: '#8B8CA7' }}>
+            <Loader size={15} style={{ animation: 'spin 1s linear infinite' }} /> Translating…
+          </div>
+        )}
+        {xlText && (
+          <div style={{ marginBottom: 14, border: '1px solid #D8D6F5', borderRadius: 10, background: '#F7F7FB', overflow: 'hidden' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', borderBottom: '1px solid #E6E6F2', background: '#F0EFFA' }}>
+              <Languages size={14} color="#6264A7" />
+              <span style={{ fontSize: 12, fontWeight: 700, color: '#4338CA' }}>
+                Translated to {TRANSLATE_LANGS.find((l) => l.lang === xlText.lang)?.native}
+              </span>
+              <div style={{ flex: 1 }} />
+              <button onClick={() => setXlMenu(true)} style={{ background: 'none', border: 'none', color: '#6264A7', cursor: 'pointer', fontSize: 12, fontWeight: 600, fontFamily: 'inherit' }}>Other language</button>
+              <button onClick={() => setXlText(null)} style={{ background: 'none', border: 'none', color: '#8B8CA7', cursor: 'pointer', fontSize: 12, fontFamily: 'inherit', display: 'inline-flex', alignItems: 'center' }} title="Hide translation"><X size={14} /></button>
+            </div>
+            <div style={{ padding: '14px 18px', fontSize: 14, lineHeight: 1.7, color: '#242424', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+              {xlText.text}
+            </div>
+          </div>
+        )}
 
         {/* ── Latest Message — always expanded ── */}
         <div style={{
@@ -1668,6 +1745,42 @@ function EmailCompose({ userEmail, userName, userDesignation, userDepartment, re
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [attachments, setAttachments] = useState<File[]>([]);
   const [sending, setSending] = useState(false);
+  // AI Smart Compose (rewrite the email body)
+  const [aiMenuOpen, setAiMenuOpen] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
+  const aiMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close the AI menu on click outside
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      if (aiMenuRef.current && !aiMenuRef.current.contains(e.target as Node)) setAiMenuOpen(false);
+    };
+    if (aiMenuOpen) document.addEventListener('mousedown', onClick);
+    return () => document.removeEventListener('mousedown', onClick);
+  }, [aiMenuOpen]);
+
+  // Rewrite the current body text in the chosen style. Operates on the visible
+  // text (innerText) and writes the result back as plain text (XSS-safe). The
+  // signature is appended only at send time, so it's never touched here.
+  const handleComposeRewrite = async (mode: RewriteMode) => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const text = (el.innerText || '').trim();
+    if (!text || aiBusy) return;
+    setAiMenuOpen(false);
+    setAiBusy(true);
+    try {
+      const result = await aiRewrite(text, mode);
+      if (result) {
+        el.innerText = result; // plain-text assignment — preserves line breaks, no HTML injection
+        el.focus();
+      }
+    } catch (err: any) {
+      alert(err?.response?.data?.error || 'AI is unavailable right now');
+    } finally {
+      setAiBusy(false);
+    }
+  };
 
   // Load all contacts once on mount for instant filtering
   useEffect(() => {
@@ -1862,6 +1975,56 @@ function EmailCompose({ userEmail, userName, userDesignation, userDepartment, re
           <option value="5">18</option>
           <option value="6">24</option>
         </select>
+
+        <div style={{ width: 1, height: 18, background: '#E0E0E0', margin: '0 6px' }} />
+        {/* AI Smart Compose — rewrite the draft */}
+        <div style={{ position: 'relative' }} ref={aiMenuRef}>
+          <button
+            onClick={() => { if (!aiBusy) setAiMenuOpen((v) => !v); }}
+            disabled={aiBusy}
+            title="AI — rewrite your email"
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5, padding: '4px 10px',
+              borderRadius: 6, border: '1px solid #D8D6F5', background: '#F3F2FA',
+              color: '#4338CA', fontSize: 12, fontWeight: 600,
+              cursor: aiBusy ? 'wait' : 'pointer', fontFamily: 'inherit',
+            }}
+          >
+            <Sparkles size={14} style={aiBusy ? { animation: 'spin 1s linear infinite' } : undefined} />
+            {aiBusy ? 'Rewriting…' : 'AI rewrite'}
+          </button>
+          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+          {aiMenuOpen && (
+            <div
+              style={{
+                position: 'absolute', top: 34, left: 0, background: '#fff',
+                border: '1px solid #E1DFDD', borderRadius: 10,
+                boxShadow: '0 8px 28px rgba(0,0,0,0.16)', padding: 6, zIndex: 200,
+                width: 'max-content', minWidth: 180,
+              }}
+            >
+              <div style={{ fontSize: 10, fontWeight: 700, color: '#8B8CA7', textTransform: 'uppercase', letterSpacing: 0.4, padding: '4px 10px 6px' }}>
+                Rewrite with AI
+              </div>
+              {REWRITE_MODES.map(({ mode, label }) => (
+                <button
+                  key={mode}
+                  onClick={() => handleComposeRewrite(mode)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+                    textAlign: 'left', padding: '8px 10px', border: 'none',
+                    background: 'transparent', borderRadius: 6, cursor: 'pointer',
+                    fontSize: 13, color: '#242424', fontFamily: 'inherit',
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = '#F3F2FA'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                >
+                  <Sparkles size={13} color="#6264A7" /> {label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Attachments List */}

@@ -1,9 +1,10 @@
 import { useState, useRef } from 'react';
 import { format } from 'date-fns';
-import { Pencil, Trash2, Reply, SmilePlus, FileIcon, Download, X, CornerDownRight, Play, Pause, Clock, AlertCircle, RefreshCw, Phone, Video, PhoneMissed, PhoneOff } from 'lucide-react';
+import { Pencil, Trash2, Reply, SmilePlus, FileIcon, Download, X, CornerDownRight, Play, Pause, Clock, AlertCircle, RefreshCw, Phone, Video, PhoneMissed, PhoneOff, Eye, Languages, Loader2 } from 'lucide-react';
 import { getSocket } from '@/services/socket';
 import { useAuthStore } from '@/stores/authStore';
 import { useChatStore } from '@/stores/chatStore';
+import { aiTranslate, TRANSLATE_LANGS, type TranslateLang } from '@/services/ai';
 import api from '@/services/api';  // still needed for edit/delete
 import type { Message, MentionData } from '@/types';
 
@@ -12,6 +13,13 @@ interface Props {
   isOwn: boolean;
   showAvatar: boolean;
   onReply?: (message: Message) => void;
+  /** True only for the latest OWN message that's been read (Teams-style: one
+   *  moving "Seen" marker). */
+  seen?: boolean;
+  /** Tooltip text, e.g. "Seen" or "Seen by Pramit, Admin". */
+  seenTooltip?: string;
+  /** Optional small count shown next to the eye (group chats only). */
+  seenText?: string;
 }
 
 const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '🎉', '👏'];
@@ -132,7 +140,7 @@ function renderContentWithMentions(content: string, mentions: MentionData[] | un
   return <>{parts}</>;
 }
 
-export default function MessageBubble({ message: msg, isOwn, showAvatar, onReply }: Props) {
+export default function MessageBubble({ message: msg, isOwn, showAvatar, onReply, seen, seenTooltip, seenText }: Props) {
   const [showActions, setShowActions] = useState(false);
   const [showReactions, setShowReactions] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -140,6 +148,37 @@ export default function MessageBubble({ message: msg, isOwn, showAvatar, onReply
   const [imagePreview, setImagePreview] = useState(false);
   const { user } = useAuthStore();
   const { addReaction, removeReaction, updateMessage } = useChatStore();
+  // ── Inline translation state ──
+  const [showLangMenu, setShowLangMenu] = useState(false);
+  const [translating, setTranslating] = useState(false);
+  const [translation, setTranslation] = useState<{ lang: TranslateLang; text: string } | null>(null);
+  const translateCacheRef = useRef<Record<string, string>>({});
+
+  const handleTranslate = async (lang: TranslateLang) => {
+    setShowLangMenu(false);
+    const source = (msg.content || '').trim();
+    if (!source) return;
+    // Serve from cache if we've already translated this message to this language.
+    if (translateCacheRef.current[lang]) {
+      setTranslation({ lang, text: translateCacheRef.current[lang] });
+      return;
+    }
+    setTranslating(true);
+    try {
+      const result = await aiTranslate(source, lang);
+      translateCacheRef.current[lang] = result;
+      setTranslation({ lang, text: result });
+    } catch {
+      setTranslation({ lang, text: '⚠️ Translation failed — please try again.' });
+    } finally {
+      setTranslating(false);
+    }
+  };
+
+  const translateLinkStyle: React.CSSProperties = {
+    background: 'none', border: 'none', cursor: 'pointer',
+    color: '#6264A7', fontSize: 11, fontWeight: 600, fontFamily: 'inherit', padding: 0,
+  };
 
   if (msg.type === 'system') {
     // Check if this is a call-related system message
@@ -490,6 +529,64 @@ export default function MessageBubble({ message: msg, isOwn, showAvatar, onReply
             )}
           </div>
 
+          {/* Inline translation (AI) */}
+          {(showLangMenu || translating || translation) && (
+            <div style={{ marginTop: 6 }}>
+              <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+              {showLangMenu && !translation && !translating && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                  <span style={{ fontSize: 11, color: '#8B8CA7', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    <Languages size={12} color="#6264A7" /> Translate to
+                  </span>
+                  {TRANSLATE_LANGS.map((l) => (
+                    <button
+                      key={l.lang}
+                      onClick={() => handleTranslate(l.lang)}
+                      title={`Translate to ${l.label}`}
+                      style={{
+                        padding: '4px 10px', borderRadius: 14, border: '1px solid #D8D6F5',
+                        background: '#F3F2FA', color: '#4338CA', fontSize: 12, cursor: 'pointer',
+                        fontFamily: 'inherit',
+                      }}
+                      onMouseEnter={(e) => { e.currentTarget.style.background = '#E8E6F5'; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.background = '#F3F2FA'; }}
+                    >
+                      {l.native}
+                    </button>
+                  ))}
+                  <button onClick={() => setShowLangMenu(false)} style={translateLinkStyle} title="Cancel">Cancel</button>
+                </div>
+              )}
+              {translating && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#8B8CA7' }}>
+                  <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Translating…
+                </div>
+              )}
+              {translation && (
+                <div
+                  style={{
+                    padding: '8px 12px', borderRadius: 10,
+                    background: isOwn ? 'rgba(98,100,167,0.08)' : '#F7F7FB',
+                    border: '1px solid #E6E6F2', maxWidth: '100%',
+                  }}
+                >
+                  <div style={{ fontSize: 14, color: '#242424', lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                    {translation.text}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, fontSize: 11, color: '#8B8CA7', flexWrap: 'wrap' }}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                      <Languages size={11} /> {TRANSLATE_LANGS.find((l) => l.lang === translation.lang)?.native}
+                    </span>
+                    <span>·</span>
+                    <button onClick={() => { setTranslation(null); setShowLangMenu(true); }} style={translateLinkStyle}>Other language</button>
+                    <span>·</span>
+                    <button onClick={() => { setTranslation(null); setShowLangMenu(false); }} style={translateLinkStyle}>Hide</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Time + edited label + status indicators below bubble */}
           <div
             style={{
@@ -526,6 +623,17 @@ export default function MessageBubble({ message: msg, isOwn, showAvatar, onReply
               <>
                 {msg.is_edited && <span style={{ fontSize: 10, color: '#A19F9D', fontStyle: 'italic' }}>edited</span>}
                 <span style={{ fontSize: 10, color: '#A19F9D' }}>{time}</span>
+                {/* Teams-style "Seen" indicator — only on the latest own read message */}
+                {isOwn && seen && (
+                  <span
+                    title={seenTooltip || 'Seen'}
+                    aria-label={seenTooltip || 'Seen'}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 2, color: '#6264A7', marginLeft: 2 }}
+                  >
+                    <Eye size={12} />
+                    {seenText ? <span style={{ fontSize: 10, fontWeight: 600 }}>{seenText}</span> : null}
+                  </span>
+                )}
               </>
             )}
           </div>
@@ -575,6 +683,13 @@ export default function MessageBubble({ message: msg, isOwn, showAvatar, onReply
             >
               <ActionButton icon={<SmilePlus size={14} />} onClick={() => setShowReactions(!showReactions)} title="React" />
               <ActionButton icon={<Reply size={14} />} onClick={handleReply} title="Reply" />
+              {!!(msg.content && msg.content.trim()) && (
+                <ActionButton
+                  icon={<Languages size={14} />}
+                  onClick={() => { setShowActions(false); setTranslation(null); setShowLangMenu(true); }}
+                  title="Translate"
+                />
+              )}
               {isOwn && (
                 <>
                   <ActionButton icon={<Pencil size={14} />} onClick={() => { setIsEditing(true); setEditText(msg.content); }} title="Edit" />
