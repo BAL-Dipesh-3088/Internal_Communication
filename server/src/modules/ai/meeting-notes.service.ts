@@ -12,7 +12,7 @@ import fs from 'fs';
 import { query } from '../../database/connection';
 import { summarizeMeeting, type MeetingNotes } from './ai.service';
 import { sendSystemEmail } from '../email/email.service';
-import { startMeetingAudioEgress } from '../../services/livekit.service';
+import { startMeetingAudioEgress, createRoom } from '../../services/livekit.service';
 
 const WHISPER_URL = process.env.WHISPER_URL || 'http://whisper:8000';
 const WHISPER_MODEL = process.env.WHISPER_MODEL || 'Systran/faster-whisper-base';
@@ -65,6 +65,20 @@ export async function startMeetingNotesRecording(params: {
       attendees = rows.rows.map((r) => ({ id: r.id, name: r.display_name, email: r.email }));
     }
     attendees = attendees || [];
+
+    // Ensure the LiveKit room EXISTS before starting egress. Scheduled meetings
+    // lazy-create their room only when the first participant's WebSocket
+    // connects — which happens seconds AFTER the /join REST call that triggers
+    // us. Without this, egress fails with "requested room does not exist"
+    // (the exact production bug on 03-Jul). createRoom is idempotent — an
+    // "already exists" error is fine and swallowed here.
+    try {
+      await createRoom(roomName, 30);
+    } catch (err: any) {
+      if (!String(err?.message || '').toLowerCase().includes('already exists')) {
+        console.warn('[MeetingNotes] pre-create room warning:', err.message);
+      }
+    }
 
     const egress = await startMeetingAudioEgress(roomName);
 
